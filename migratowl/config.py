@@ -1,6 +1,10 @@
 """Application configuration via pydantic-settings with MIGRATOWL_ env prefix."""
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
+
+# Load .env into os.environ so third-party SDKs (LangSmith, OpenAI) can read it.
+load_dotenv(override=False)
 
 
 class Settings(BaseSettings):
@@ -15,7 +19,7 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     local_embedding_model: str = "nomic-embed-text"
 
-    model_config = {"env_prefix": "MIGRATOWL_", "env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_prefix": "MIGRATOWL_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

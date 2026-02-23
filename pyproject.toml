@@ -7,7 +7,7 @@ license = "MIT"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "langgraph>=1.0.7,<2",
-    "langchain-core>=1.0,<2",
+    "langsmith>=0.3,<1",
     "chromadb>=1.5,<2",
     "instructor>=1.14,<2",
     "fastmcp>=2.14,<3",
@@ -33,6 +33,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
     "mypy>=1.13",
+    "langsmith>=0.3,<1",
 ]
 
 [build-system]
@@ -53,7 +54,8 @@ addopts = "--ignore=tests/integration"
 markers = ["integration: integration tests requiring external services (Ollama, network)"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+exclude = ["^\\.venv/", "^tests/integration/"]
