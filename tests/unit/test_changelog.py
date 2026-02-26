@@ -695,7 +695,7 @@ class TestFetchFromGithubReleases:
         assert any("api.github.com/repos/langchain-ai/langsmith-sdk/releases" in u for u in captured_urls)
 
     @pytest.mark.asyncio
-    async def test_strips_hash_fragment_from_repository_url(self) -> None:
+    async def test_strips_hash_fragment_from_repository_url(self) -> None:  # noqa: E501
         """URLs like 'github.com/Goldziher/tree-sitter-language-pack#readme' must not
         embed the fragment into the API path (tree-sitter-language-pack regression)."""
         from migratowl.core.changelog import _fetch_from_github_releases
@@ -726,3 +726,197 @@ class TestFetchFromGithubReleases:
         assert captured_urls[0] == (
             "https://api.github.com/repos/Goldziher/tree-sitter-language-pack/releases?per_page=100"
         )
+
+
+class TestTryUrlsConcurrently:
+    """Tests for the concurrent URL fetching helper."""
+
+    @pytest.mark.asyncio
+    async def test_returns_text_of_first_valid_url(self) -> None:
+        """Returns the text of the first URL with parseable version chunks."""
+        import asyncio
+
+        from migratowl.core.changelog import _try_urls_concurrently
+
+        async def fake_get(url: str) -> object:
+            if url == "https://example.com/2":
+                return type("R", (), {"status_code": 200, "text": "## v1.0.0\n- Change"})()
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=fake_get)
+        sem = asyncio.Semaphore(10)
+
+        result = await _try_urls_concurrently(
+            mock_client,
+            ["https://example.com/1", "https://example.com/2", "https://example.com/3"],
+            sem,
+        )
+        assert result is not None
+        assert "1.0.0" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_all_404(self) -> None:
+        """Returns None when all URLs return 404."""
+        import asyncio
+
+        from migratowl.core.changelog import _try_urls_concurrently
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=type("R", (), {"status_code": 404, "text": ""})())
+        sem = asyncio.Semaphore(10)
+
+        result = await _try_urls_concurrently(
+            mock_client,
+            ["https://example.com/1", "https://example.com/2"],
+            sem,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_200_but_no_version_chunks(self) -> None:
+        """Returns None when all URLs return 200 but with no parseable version headers."""
+        import asyncio
+
+        from migratowl.core.changelog import _try_urls_concurrently
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(
+            return_value=type("R", (), {"status_code": 200, "text": "No version headers here"})()
+        )
+        sem = asyncio.Semaphore(10)
+
+        result = await _try_urls_concurrently(mock_client, ["https://example.com/1"], sem)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_empty_url_list(self) -> None:
+        """Returns None immediately for an empty URL list."""
+        import asyncio
+
+        from migratowl.core.changelog import _try_urls_concurrently
+
+        mock_client = AsyncMock()
+        sem = asyncio.Semaphore(10)
+
+        result = await _try_urls_concurrently(mock_client, [], sem)
+        assert result is None
+        mock_client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_semaphore_caps_peak_concurrency(self) -> None:
+        """Concurrent tasks must not exceed the semaphore limit."""
+        import asyncio
+
+        from migratowl.core.changelog import _try_urls_concurrently
+
+        cap = 3
+        sem = asyncio.Semaphore(cap)
+        peak = 0
+        active = 0
+        lock = asyncio.Lock()
+
+        async def fake_get(url: str) -> object:
+            nonlocal peak, active
+            async with lock:
+                active += 1
+                peak = max(peak, active)
+            await asyncio.sleep(0.005)
+            async with lock:
+                active -= 1
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=fake_get)
+
+        urls = [f"https://example.com/{i}" for i in range(10)]
+        await _try_urls_concurrently(mock_client, urls, sem)
+
+        assert peak <= cap
+
+
+class TestFetchChangelogStrategyOrdering:
+    """Tests for token-based strategy ordering in fetch_changelog."""
+
+    @pytest.mark.asyncio
+    async def test_with_token_releases_api_tried_before_file_probe(self) -> None:
+        """When github_token is set, Releases API is tried before raw file probing."""
+        call_order: list[str] = []
+
+        async def mock_releases(repo_url: str) -> str:
+            call_order.append("releases")
+            return "## v1.0.0\n- Done"
+
+        async def mock_file_probe(repo_url: str) -> str:
+            call_order.append("file_probe")
+            return "## v1.0.0\n- Done"
+
+        with (
+            patch("migratowl.core.changelog._fetch_from_github_releases", mock_releases),
+            patch("migratowl.core.changelog._fetch_from_github", mock_file_probe),
+            patch("migratowl.core.changelog.settings") as mock_settings,
+        ):
+            mock_settings.github_token = "ghp_testtoken"
+            await fetch_changelog(
+                changelog_url=None,
+                repository_url="https://github.com/owner/repo",
+                dep_name="pkg",
+            )
+
+        assert call_order[0] == "releases", f"Expected releases first, got: {call_order}"
+
+    @pytest.mark.asyncio
+    async def test_without_token_file_probe_tried_before_releases_api(self) -> None:
+        """Without github_token, raw file probing is tried before Releases API."""
+        call_order: list[str] = []
+
+        async def mock_releases(repo_url: str) -> str:
+            call_order.append("releases")
+            return "## v1.0.0\n- Done"
+
+        async def mock_file_probe(repo_url: str) -> str:
+            call_order.append("file_probe")
+            return "## v1.0.0\n- Done"
+
+        with (
+            patch("migratowl.core.changelog._fetch_from_github_releases", mock_releases),
+            patch("migratowl.core.changelog._fetch_from_github", mock_file_probe),
+            patch("migratowl.core.changelog.settings") as mock_settings,
+        ):
+            mock_settings.github_token = None
+            await fetch_changelog(
+                changelog_url=None,
+                repository_url="https://github.com/owner/repo",
+                dep_name="pkg",
+            )
+
+        assert call_order[0] == "file_probe", f"Expected file_probe first, got: {call_order}"
+
+    @pytest.mark.asyncio
+    async def test_with_token_and_releases_fails_file_probe_is_fallback(self) -> None:
+        """With token, if Releases API fails, raw file probing is used as fallback."""
+        call_order: list[str] = []
+
+        async def mock_releases(repo_url: str) -> str:
+            call_order.append("releases")
+            raise FileNotFoundError("no releases")
+
+        async def mock_file_probe(repo_url: str) -> str:
+            call_order.append("file_probe")
+            return "## v1.0.0\n- Found via file probe"
+
+        with (
+            patch("migratowl.core.changelog._fetch_from_github_releases", mock_releases),
+            patch("migratowl.core.changelog._fetch_from_github", mock_file_probe),
+            patch("migratowl.core.changelog.settings") as mock_settings,
+        ):
+            mock_settings.github_token = "ghp_testtoken"
+            text, warnings = await fetch_changelog(
+                changelog_url=None,
+                repository_url="https://github.com/owner/repo",
+                dep_name="pkg",
+            )
+
+        assert call_order == ["releases", "file_probe"]
+        assert "Found via file probe" in text
+        assert warnings == []

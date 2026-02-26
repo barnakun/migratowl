@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 import html2text as _html2text
@@ -31,15 +32,18 @@ async def fetch_changelog(
             pass
 
     if repository_url:
-        try:
-            return await _fetch_from_github(repository_url), []
-        except Exception:
-            pass
-
-        try:
-            return await _fetch_from_github_releases(repository_url), []
-        except Exception:
-            pass
+        # With a token: API is cheap (5 000 req/hr) → try it before slow file probing.
+        # Without token: preserve quota (60 req/hr) → file probing first, API last.
+        ordered = (
+            [_fetch_from_github_releases, _fetch_from_github]
+            if settings.github_token
+            else [_fetch_from_github, _fetch_from_github_releases]
+        )
+        for strategy in ordered:
+            try:
+                return await strategy(repository_url), []
+            except Exception:
+                pass
 
     return "", [f"Could not fetch changelog for {dep_name}"]
 
@@ -101,14 +105,52 @@ _SUBDIRECTORY_ROOTS: list[str] = [
 _DOC_FILENAMES: list[str] = [f"{subdir}{name}" for subdir in _SUBDIRECTORY_ROOTS for name in _CHANGELOG_FILENAMES]
 
 
+async def _try_urls_concurrently(
+    client: httpx.AsyncClient,
+    urls: list[str],
+    sem: asyncio.Semaphore,
+) -> str | None:
+    """Return text of the first URL that yields valid version chunks, or None.
+
+    Fans out all requests concurrently, capped by *sem*.  Returns as soon as
+    any response contains parseable version headers; cancels remaining tasks.
+    """
+    if not urls:
+        return None
+
+    async def _fetch_one(url: str) -> str | None:
+        async with sem:
+            try:
+                r = await client.get(url)
+                if r.status_code == 200 and chunk_changelog_by_version(r.text):
+                    return r.text
+            except Exception:
+                pass
+            return None
+
+    tasks = [asyncio.create_task(_fetch_one(url)) for url in urls]
+    result: str | None = None
+    try:
+        for fut in asyncio.as_completed(tasks):
+            value = await fut
+            if value is not None:
+                result = value
+                break
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return result
+
+
 async def _fetch_from_github(repository_url: str) -> str:
     """Try common changelog filenames on raw.githubusercontent.com.
 
     Strategy:
-    1. Try root-level filenames on main then master.
+    1. Fan out all root-level URLs (filenames × branches) concurrently.
     2. If a file returns 200 but has no version headers it is a stub —
        scan it for a GitHub blob URL and follow that URL directly.
-    3. If all root files fail, retry with doc-subdirectory paths.
+    3. If all root files fail, repeat with doc-subdirectory paths.
     """
     match = re.search(r"github\.com[/:]([^/]+)/([^/.#]+)", repository_url)
     if not match:
@@ -116,33 +158,41 @@ async def _fetch_from_github(repository_url: str) -> str:
 
     owner, repo = match.group(1), match.group(2)
     branches = ["main", "master"]
+    sem = asyncio.Semaphore(10)
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
         for filenames_group in (_ROOT_FILENAMES, _DOC_FILENAMES):
-            for branch in branches:
-                for filename in filenames_group:
-                    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}"
-                    try:
-                        response = await client.get(url)
-                        if response.status_code != 200:
-                            continue
-                        text = response.text
-                        if chunk_changelog_by_version(text):
-                            return text
-                        # Stub: look for a GitHub blob URL and follow it once.
-                        m = _GITHUB_BLOB_RE.search(text)
-                        if m:
-                            raw_url = (
-                                f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
-                            )
-                            try:
-                                r2 = await client.get(raw_url)
-                                if r2.status_code == 200 and chunk_changelog_by_version(r2.text):
-                                    return r2.text
-                            except Exception:
-                                pass
-                    except Exception:
+            urls = [
+                f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}"
+                for branch in branches
+                for filename in filenames_group
+            ]
+
+            # Fast path: probe all URLs in parallel.
+            result = await _try_urls_concurrently(client, urls, sem)
+            if result is not None:
+                return result
+
+            # Slow path: look for stub files that embed a GitHub blob URL.
+            for url in urls:
+                try:
+                    r = await client.get(url)
+                    if r.status_code != 200 or chunk_changelog_by_version(r.text):
                         continue
+                    m = _GITHUB_BLOB_RE.search(r.text)
+                    if m:
+                        raw_url = (
+                            f"https://raw.githubusercontent.com/"
+                            f"{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
+                        )
+                        try:
+                            r2 = await client.get(raw_url)
+                            if r2.status_code == 200 and chunk_changelog_by_version(r2.text):
+                                return r2.text
+                        except Exception:
+                            pass
+                except Exception:
+                    continue
 
     raise FileNotFoundError(f"No changelog found for {owner}/{repo}")
 

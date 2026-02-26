@@ -87,14 +87,25 @@ async def run(project_path: str) -> None:
 
     # ── 3. Changelog fetch + chunking ─────────────────────────────────────────
     console.print(Rule("[yellow]Step 3: Fetching changelogs[/yellow]"))
-    for dep in outdated:
+    fetch_results = await asyncio.gather(
+        *[
+            fetch_changelog(
+                changelog_url=dep.changelog_url,
+                repository_url=dep.repository_url,
+                dep_name=dep.name,
+            )
+            for dep in outdated
+        ],
+        return_exceptions=True,
+    )
+    for dep, result in zip(outdated, fetch_results):
         console.print(f"\n[bold cyan]{dep.name}[/bold cyan]  {dep.current_version} → {dep.latest_version}")
 
-        changelog_text, warnings = await fetch_changelog(
-            changelog_url=dep.changelog_url,
-            repository_url=dep.repository_url,
-            dep_name=dep.name,
-        )
+        if isinstance(result, Exception):
+            console.print(f"  [red]⚠  Error fetching changelog: {result}[/red]")
+            continue
+
+        changelog_text, warnings = result  # type: ignore[misc]
 
         if warnings:
             for w in warnings:
@@ -113,8 +124,10 @@ async def run(project_path: str) -> None:
             latest_version=dep.latest_version,
         )
 
-        console.print(f"  [bold]{len(relevant)}[/bold] sections in upgrade range  "
-                      f"({dep.current_version} < version ≤ {dep.latest_version})\n")
+        console.print(
+            f"  [bold]{len(relevant)}[/bold] sections in upgrade range  "
+            f"({dep.current_version} < version ≤ {dep.latest_version})\n"
+        )
 
         if not relevant:
             console.print("  [dim]No changelog sections found for this version range.[/dim]")
