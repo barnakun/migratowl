@@ -7,6 +7,7 @@ import logging
 import re
 
 import httpx
+from packaging.version import InvalidVersion, Version
 
 from migratowl.models.schemas import Dependency, Ecosystem, OutdatedDependency, RegistryInfo
 
@@ -89,15 +90,31 @@ def _extract_repo_url(project_urls: dict | None) -> str | None:
     # Check explicit repo keys first.
     for key in _REPO_KEYS:
         if key in project_urls:
-            result: str = project_urls[key]
-            return result
+            return _strip_url_fragment(project_urls[key])
 
     # Fall back: any URL containing github.com or gitlab.com.
     for key, url in project_urls.items():
         if isinstance(url, str) and ("github.com" in url or "gitlab.com" in url):
-            return url
+            return _strip_url_fragment(url)
 
     return None
+
+
+def _is_newer(latest: str, current: str) -> bool:
+    """Return True only if latest is strictly newer than current by PEP 440.
+
+    Falls back to string inequality for non-PEP-440 version strings (e.g. npm).
+    Prevents false positives like '0.13' vs '0.13.0' which are equal by PEP 440.
+    """
+    try:
+        return Version(latest) > Version(current)
+    except InvalidVersion:
+        return latest != current
+
+
+def _strip_url_fragment(url: str) -> str:
+    """Remove any #fragment from a URL (e.g. 'github.com/org/repo#readme' → 'github.com/org/repo')."""
+    return url.split("#")[0]
 
 
 def _extract_changelog_url(project_urls: dict | None) -> str | None:
@@ -125,7 +142,7 @@ async def find_outdated(deps: list[Dependency]) -> list[OutdatedDependency]:
             logger.warning("Failed to query registry for %s", dep.name)
             return None
 
-        if info.latest_version != dep.current_version:
+        if _is_newer(info.latest_version, dep.current_version):
             return OutdatedDependency(
                 name=dep.name,
                 current_version=dep.current_version,

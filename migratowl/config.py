@@ -10,6 +10,7 @@ load_dotenv(override=False)
 class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    github_token: str = ""
     use_local_llm: bool = False
     ollama_base_url: str = "http://localhost:11434/v1"
     local_llm_model: str = "llama3.2"

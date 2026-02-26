@@ -159,6 +159,12 @@ class TestExtractRepoUrl:
     def test_none_input(self) -> None:
         assert _extract_repo_url(None) is None
 
+    def test_strips_hash_fragment_from_url(self) -> None:
+        """PyPI sometimes includes #readme or similar fragments in repo URLs
+        (e.g. tree-sitter-language-pack). The fragment must be stripped."""
+        urls = {"Homepage": "https://github.com/Goldziher/tree-sitter-language-pack#readme"}
+        assert _extract_repo_url(urls) == "https://github.com/Goldziher/tree-sitter-language-pack"
+
 
 # --- _extract_changelog_url ---
 
@@ -248,3 +254,18 @@ class TestFindOutdated:
     async def test_empty_deps_list(self) -> None:
         outdated = await find_outdated([])
         assert outdated == []
+
+    async def test_pep440_equivalent_versions_not_marked_outdated(self) -> None:
+        """'0.13' and '0.13.0' are identical by PEP 440 — must not appear as outdated.
+        String comparison '0.13' != '0.13.0' is a false positive (tree-sitter-language-pack regression)."""
+        deps = [
+            Dependency(name="pkg", current_version="0.13", ecosystem=Ecosystem.PYTHON, manifest_path="r.txt"),
+        ]
+
+        async def mock_query(name: str, eco: Ecosystem) -> RegistryInfo:
+            return RegistryInfo(name="pkg", latest_version="0.13.0")
+
+        with patch("migratowl.core.registry.query_registry", side_effect=mock_query):
+            outdated = await find_outdated(deps)
+
+        assert len(outdated) == 0, "0.13 == 0.13.0 by PEP 440; should not be outdated"

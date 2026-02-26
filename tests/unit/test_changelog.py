@@ -403,6 +403,30 @@ class TestFetchFromGithub:
         assert "Real change" in result
 
     @pytest.mark.asyncio
+    async def test_strips_hash_fragment_from_repository_url(self) -> None:
+        """URLs with #fragment (e.g. '...pack#readme') must not embed the fragment
+        into raw.githubusercontent.com paths (tree-sitter-language-pack regression)."""
+        from migratowl.core.changelog import _fetch_from_github
+
+        fetched_urls: list[str] = []
+
+        async def fake_get(url: str) -> object:
+            fetched_urls.append(url)
+            if "tree-sitter-language-pack/main/CHANGELOG.md" in url:
+                return type("R", (), {"status_code": 200, "text": "## 0.13.0\n- Initial."})()
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__aenter__.return_value
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            result = await _fetch_from_github(
+                "https://github.com/Goldziher/tree-sitter-language-pack#readme"
+            )
+
+        assert all("#" not in u for u in fetched_urls), "Fragment leaked into raw URL"
+        assert "Initial" in result
+
+    @pytest.mark.asyncio
     async def test_stub_file_without_github_url_continues_to_next_candidate(self) -> None:
         """A stub with no GitHub blob URL is skipped; search continues to the next file."""
         from migratowl.core.changelog import _fetch_from_github
@@ -491,3 +515,214 @@ class TestFetchChangelog:
         assert text == ""
         assert len(warnings) > 0
         assert "test-pkg" in warnings[0]
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_github_releases_when_file_probe_fails(self) -> None:
+        """When raw file probing finds no CHANGELOG.md, GitHub Releases API is tried."""
+        with (
+            patch(
+                "migratowl.core.changelog._fetch_from_github",
+                new_callable=AsyncMock,
+                side_effect=FileNotFoundError("no changelog file"),
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github_releases",
+                new_callable=AsyncMock,
+                return_value="## v1.0.9\n- Fix bug\n\n## v1.0.8\n- Add feature",
+            ) as mock_releases,
+        ):
+            text, warnings = await fetch_changelog(
+                changelog_url=None,
+                repository_url="https://github.com/owner/repo",
+                dep_name="test-pkg",
+            )
+            assert "1.0.9" in text
+            assert warnings == []
+            mock_releases.assert_called_once_with("https://github.com/owner/repo")
+
+    @pytest.mark.asyncio
+    async def test_returns_warning_when_github_releases_also_fails(self) -> None:
+        """Warning is returned only after all three strategies are exhausted."""
+        with (
+            patch(
+                "migratowl.core.changelog._fetch_from_github",
+                new_callable=AsyncMock,
+                side_effect=FileNotFoundError("no changelog file"),
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github_releases",
+                new_callable=AsyncMock,
+                side_effect=Exception("rate limited"),
+            ),
+        ):
+            text, warnings = await fetch_changelog(
+                changelog_url=None,
+                repository_url="https://github.com/owner/repo",
+                dep_name="test-pkg",
+            )
+            assert text == ""
+            assert "test-pkg" in warnings[0]
+
+
+class TestFetchFromGithubReleases:
+    @pytest.mark.asyncio
+    async def test_converts_releases_to_changelog_text(self) -> None:
+        """GitHub releases response body fields become parseable changelog sections."""
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases = [
+            {"tag_name": "v1.0.9", "body": "- Fix critical bug", "draft": False, "prerelease": False},
+            {"tag_name": "v1.0.8", "body": "- Add new feature", "draft": False, "prerelease": False},
+        ]
+        mock_response = type(
+            "R",
+            (),
+            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+        )()
+
+        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__aenter__.return_value
+            mock_client.get = AsyncMock(return_value=mock_response)
+            result = await _fetch_from_github_releases("https://github.com/owner/repo")
+
+        chunks = chunk_changelog_by_version(result)
+        versions = [c["version"] for c in chunks]
+        assert "1.0.9" in versions
+        assert "1.0.8" in versions
+        assert "Fix critical bug" in result
+        assert "Add new feature" in result
+
+    @pytest.mark.asyncio
+    async def test_skips_draft_and_prerelease_entries(self) -> None:
+        """Draft and prerelease entries are excluded from the changelog text."""
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases = [
+            {"tag_name": "v2.0.0-beta", "body": "Beta stuff", "draft": False, "prerelease": True},
+            {"tag_name": "v1.0.0-draft", "body": "Draft stuff", "draft": True, "prerelease": False},
+            {"tag_name": "v1.0.0", "body": "Stable release", "draft": False, "prerelease": False},
+        ]
+        mock_response = type(
+            "R",
+            (),
+            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+        )()
+
+        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__aenter__.return_value
+            mock_client.get = AsyncMock(return_value=mock_response)
+            result = await _fetch_from_github_releases("https://github.com/owner/repo")
+
+        assert "Beta stuff" not in result
+        assert "Draft stuff" not in result
+        assert "Stable release" in result
+
+    @pytest.mark.asyncio
+    async def test_raises_when_no_usable_releases(self) -> None:
+        """FileNotFoundError is raised when there are no non-draft, non-prerelease releases."""
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases: list = []
+        mock_response = type(
+            "R",
+            (),
+            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+        )()
+
+        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__aenter__.return_value
+            mock_client.get = AsyncMock(return_value=mock_response)
+            with pytest.raises(FileNotFoundError):
+                await _fetch_from_github_releases("https://github.com/owner/repo")
+
+    @pytest.mark.asyncio
+    async def test_sends_auth_header_when_token_configured(self) -> None:
+        """Authorization header is sent when MIGRATOWL_GITHUB_TOKEN is set in settings."""
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases = [
+            {"tag_name": "v1.0.0", "body": "- Change", "draft": False, "prerelease": False},
+        ]
+        mock_response = type(
+            "R",
+            (),
+            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+        )()
+
+        captured_headers: list[dict] = []
+
+        async def fake_get(url: str, **kwargs) -> object:
+            captured_headers.append(kwargs.get("headers", {}))
+            return mock_response
+
+        with (
+            patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls,
+            patch("migratowl.core.changelog.settings") as mock_settings,
+        ):
+            mock_settings.github_token = "ghp_testtoken123"
+            mock_client = mock_client_cls.return_value.__aenter__.return_value
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            await _fetch_from_github_releases("https://github.com/owner/repo")
+
+        assert any("Authorization" in h for h in captured_headers)
+        assert any("ghp_testtoken123" in str(h) for h in captured_headers)
+
+    @pytest.mark.asyncio
+    async def test_calls_correct_github_api_url(self) -> None:
+        """The GitHub Releases API endpoint is constructed from owner/repo in the URL."""
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases = [
+            {"tag_name": "v1.0.0", "body": "- Initial", "draft": False, "prerelease": False},
+        ]
+        mock_response = type(
+            "R",
+            (),
+            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+        )()
+
+        captured_urls: list[str] = []
+
+        async def fake_get(url: str, **kwargs) -> object:
+            captured_urls.append(url)
+            return mock_response
+
+        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__aenter__.return_value
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            await _fetch_from_github_releases("https://github.com/langchain-ai/langsmith-sdk")
+
+        assert any("api.github.com/repos/langchain-ai/langsmith-sdk/releases" in u for u in captured_urls)
+
+    @pytest.mark.asyncio
+    async def test_strips_hash_fragment_from_repository_url(self) -> None:
+        """URLs like 'github.com/Goldziher/tree-sitter-language-pack#readme' must not
+        embed the fragment into the API path (tree-sitter-language-pack regression)."""
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases = [
+            {"tag_name": "v0.13.0", "body": "- Initial", "draft": False, "prerelease": False},
+        ]
+        mock_response = type(
+            "R",
+            (),
+            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+        )()
+
+        captured_urls: list[str] = []
+
+        async def fake_get(url: str, **kwargs) -> object:
+            captured_urls.append(url)
+            return mock_response
+
+        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__aenter__.return_value
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            await _fetch_from_github_releases(
+                "https://github.com/Goldziher/tree-sitter-language-pack#readme"
+            )
+
+        assert len(captured_urls) == 1
+        assert captured_urls[0] == (
+            "https://api.github.com/repos/Goldziher/tree-sitter-language-pack/releases?per_page=100"
+        )

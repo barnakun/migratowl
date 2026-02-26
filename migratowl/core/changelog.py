@@ -8,6 +8,8 @@ import html2text as _html2text
 import httpx
 from packaging.version import InvalidVersion, Version
 
+from migratowl.config import settings
+
 
 async def fetch_changelog(
     changelog_url: str | None,
@@ -31,6 +33,11 @@ async def fetch_changelog(
     if repository_url:
         try:
             return await _fetch_from_github(repository_url), []
+        except Exception:
+            pass
+
+        try:
+            return await _fetch_from_github_releases(repository_url), []
         except Exception:
             pass
 
@@ -103,7 +110,7 @@ async def _fetch_from_github(repository_url: str) -> str:
        scan it for a GitHub blob URL and follow that URL directly.
     3. If all root files fail, retry with doc-subdirectory paths.
     """
-    match = re.search(r"github\.com[/:]([^/]+)/([^/.]+)", repository_url)
+    match = re.search(r"github\.com[/:]([^/]+)/([^/.#]+)", repository_url)
     if not match:
         raise ValueError(f"Cannot parse GitHub URL: {repository_url}")
 
@@ -138,6 +145,37 @@ async def _fetch_from_github(repository_url: str) -> str:
                         continue
 
     raise FileNotFoundError(f"No changelog found for {owner}/{repo}")
+
+
+async def _fetch_from_github_releases(repository_url: str) -> str:
+    """Fetch release notes from the GitHub Releases API.
+
+    Constructs changelog text from release ``body`` fields, skipping drafts and
+    pre-releases.  Raises ``FileNotFoundError`` if no usable releases exist.
+    Sends an ``Authorization`` header when ``MIGRATOWL_GITHUB_TOKEN`` is set.
+    """
+    match = re.search(r"github\.com[/:]([^/]+)/([^/.#]+)", repository_url)
+    if not match:
+        raise ValueError(f"Cannot parse GitHub URL: {repository_url}")
+
+    owner, repo = match.group(1), match.group(2)
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100"
+
+    headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        response = await client.get(api_url, headers=headers)
+        response.raise_for_status()
+        releases = response.json()
+
+    usable = [r for r in releases if not r.get("draft") and not r.get("prerelease")]
+    if not usable:
+        raise FileNotFoundError(f"No releases found for {owner}/{repo}")
+
+    sections = [f"## {r['tag_name']}\n{r.get('body') or ''}" for r in usable]
+    return "\n\n".join(sections)
 
 
 # Matches a bare version number at the start of a cleaned string: 1.2.3 or 1.2
