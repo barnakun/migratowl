@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "migratowl": "./migratowl/core/analyzer.py:build_analysis_graph"
+  },
+  "env": ".env"
+}
