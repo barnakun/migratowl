@@ -47,7 +47,9 @@ async def run(project_path: str) -> None:
 
     # ── 2. Registry ───────────────────────────────────────────────────────────
     console.print(Rule("[yellow]Step 2: Querying registries[/yellow]"))
-    outdated = await find_outdated(deps)
+    outdated, registry_errors = await find_outdated(deps)
+    for err in registry_errors:
+        console.print(f"  [red]⚠  {err}[/red]")
     console.print(f"[bold]{len(outdated)}[/bold] outdated dependencies\n")
 
     if not outdated:

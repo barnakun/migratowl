@@ -577,7 +577,7 @@ class TestFetchFromGithubReleases:
         mock_response = type(
             "R",
             (),
-            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+            {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
         with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
@@ -605,7 +605,7 @@ class TestFetchFromGithubReleases:
         mock_response = type(
             "R",
             (),
-            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+            {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
         with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
@@ -626,7 +626,7 @@ class TestFetchFromGithubReleases:
         mock_response = type(
             "R",
             (),
-            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+            {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
         with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
@@ -646,7 +646,7 @@ class TestFetchFromGithubReleases:
         mock_response = type(
             "R",
             (),
-            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+            {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
         captured_headers: list[dict] = []
@@ -678,7 +678,7 @@ class TestFetchFromGithubReleases:
         mock_response = type(
             "R",
             (),
-            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+            {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
         captured_urls: list[str] = []
@@ -706,7 +706,7 @@ class TestFetchFromGithubReleases:
         mock_response = type(
             "R",
             (),
-            {"json": lambda self: releases, "raise_for_status": lambda self: None},
+            {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
         captured_urls: list[str] = []
@@ -920,3 +920,89 @@ class TestFetchChangelogStrategyOrdering:
         assert call_order == ["releases", "file_probe"]
         assert "Found via file probe" in text
         assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# GitHub Releases pagination
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubReleasesPagination:
+    @pytest.mark.asyncio
+    async def test_fetches_all_pages_when_link_next_header_present(self) -> None:
+        """When the GitHub API returns a Link: <next> header, all pages are fetched."""
+        import httpx
+
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        page1_releases = [{"tag_name": "v3.0.0", "body": "## Breaking", "draft": False, "prerelease": False}]
+        page2_releases = [{"tag_name": "v2.0.0", "body": "## Stable", "draft": False, "prerelease": False}]
+
+        call_count = 0
+
+        async def mock_get(url: str, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First page — include Link header pointing to page 2
+                resp = httpx.Response(
+                    200,
+                    json=page1_releases,
+                    headers={"Link": '<https://api.github.com/repos/owner/repo/releases?page=2>; rel="next"'},
+                    request=httpx.Request("GET", url),
+                )
+                return resp
+            else:
+                # Second page — no Link header (last page)
+                return httpx.Response(
+                    200,
+                    json=page2_releases,
+                    request=httpx.Request("GET", url),
+                )
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = mock_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("migratowl.core.changelog.settings") as mock_settings,
+        ):
+            mock_settings.github_token = ""
+            text = await _fetch_from_github_releases("https://github.com/owner/repo")
+
+        assert call_count == 2, "Must make 2 requests (one per page)"
+        assert "v3.0.0" in text
+        assert "v2.0.0" in text
+
+    @pytest.mark.asyncio
+    async def test_single_page_no_pagination_needed(self) -> None:
+        """When there is no Link: next header, only one request is made."""
+        import httpx
+
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases = [{"tag_name": "v1.0.0", "body": "Initial release", "draft": False, "prerelease": False}]
+
+        call_count = 0
+
+        async def mock_get(url: str, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(200, json=releases, request=httpx.Request("GET", url))
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = mock_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("migratowl.core.changelog.settings") as mock_settings,
+        ):
+            mock_settings.github_token = ""
+            text = await _fetch_from_github_releases("https://github.com/owner/repo")
+
+        assert call_count == 1
+        assert "v1.0.0" in text

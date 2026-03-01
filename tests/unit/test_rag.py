@@ -237,11 +237,11 @@ class TestQueryNResults:
         query_kwargs = mock_collection.query.call_args.kwargs
         assert query_kwargs["n_results"] == 7
 
-    def test_default_n_results_is_none(self) -> None:
-        """RAG_N_RESULTS constant must be None (off by default — retrieve all)."""
+    def test_default_n_results_uses_settings(self) -> None:
+        """RAG_N_RESULTS constant must use settings.max_rag_results (default 20)."""
         from migratowl.core.rag import RAG_N_RESULTS
 
-        assert RAG_N_RESULTS is None
+        assert RAG_N_RESULTS == 20
 
 
 class TestQuery:
@@ -387,3 +387,40 @@ class TestQuery:
             query_kwargs = mock_collection.query.call_args.kwargs
             assert query_kwargs["where"] == {"dep_name": "flask"}
             assert query_kwargs["n_results"] == 3
+
+
+class TestQueryLLMSemaphore:
+    @pytest.mark.asyncio
+    async def test_query_acquires_llm_semaphore(self) -> None:
+        """RAG query must hold the LLM semaphore while making the LLM call."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["some text"]],
+            "distances": [[0.1]],
+            "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
+        }
+
+        mock_analysis = ChangelogAnalysis(
+            breaking_changes=[], deprecations=[], new_features=[], confidence=0.5
+        )
+        mock_instructor_client = MagicMock()
+        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+
+        mock_sem = MagicMock()
+        mock_sem.__aenter__ = AsyncMock(return_value=None)
+        mock_sem.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
+            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
+            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.get_llm_semaphore", return_value=mock_sem),
+        ):
+            from migratowl.core.rag import query
+
+            await query("breaking changes", "flask", n_results=3)
+
+        mock_sem.__aenter__.assert_called_once()
+        mock_sem.__aexit__.assert_called_once()

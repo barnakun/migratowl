@@ -9,6 +9,7 @@ import re
 import httpx
 from packaging.version import InvalidVersion, Version
 
+from migratowl.config import settings
 from migratowl.models.schemas import Dependency, Ecosystem, OutdatedDependency, RegistryInfo
 
 logger = logging.getLogger(__name__)
@@ -130,30 +131,41 @@ def _extract_changelog_url(project_urls: dict | None) -> str | None:
     return None
 
 
-async def find_outdated(deps: list[Dependency]) -> list[OutdatedDependency]:
-    """Query registries for all deps and return those where latest != current."""
+async def find_outdated(deps: list[Dependency]) -> tuple[list[OutdatedDependency], list[str]]:
+    """Query registries for all deps; return (outdated, errors).
+
+    Concurrent queries are capped at settings.max_concurrent_registry_queries
+    to avoid hitting PyPI/npm rate limits with large dependency lists.
+    Failed lookups are collected into the errors list rather than silently dropped.
+    """
     if not deps:
-        return []
+        return [], []
+
+    sem = asyncio.Semaphore(settings.max_concurrent_registry_queries)
+    errors: list[str] = []
 
     async def _check_one(dep: Dependency) -> OutdatedDependency | None:
-        try:
-            info = await query_registry(dep.name, dep.ecosystem)
-        except Exception:
-            logger.warning("Failed to query registry for %s", dep.name)
+        async with sem:
+            try:
+                info = await query_registry(dep.name, dep.ecosystem)
+            except Exception as exc:
+                msg = f"Registry query failed for {dep.name}: {exc}"
+                logger.warning(msg)
+                errors.append(msg)
+                return None
+
+            if _is_newer(info.latest_version, dep.current_version):
+                return OutdatedDependency(
+                    name=dep.name,
+                    current_version=dep.current_version,
+                    latest_version=info.latest_version,
+                    ecosystem=dep.ecosystem,
+                    manifest_path=dep.manifest_path,
+                    homepage_url=info.homepage_url,
+                    repository_url=info.repository_url,
+                    changelog_url=info.changelog_url,
+                )
             return None
 
-        if _is_newer(info.latest_version, dep.current_version):
-            return OutdatedDependency(
-                name=dep.name,
-                current_version=dep.current_version,
-                latest_version=info.latest_version,
-                ecosystem=dep.ecosystem,
-                manifest_path=dep.manifest_path,
-                homepage_url=info.homepage_url,
-                repository_url=info.repository_url,
-                changelog_url=info.changelog_url,
-            )
-        return None
-
     results = await asyncio.gather(*[_check_one(d) for d in deps])
-    return [r for r in results if r is not None]
+    return [r for r in results if r is not None], errors

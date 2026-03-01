@@ -1,7 +1,7 @@
 """Impact assessment — cross-references breaking changes with code usages."""
 
 from migratowl.config import active_model
-from migratowl.core.llm import client
+from migratowl.core.llm import client, get_llm_semaphore
 from migratowl.models.schemas import (
     BreakingChange,
     CodeUsage,
@@ -33,28 +33,29 @@ async def assess_impact(
 
     context = _build_impact_context(breaking_changes, code_usages)
 
-    result: ImpactAssessment = await client.chat.completions.create(
-        model=active_model(),
-        response_model=ImpactAssessment,
-        max_retries=2,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a dependency migration expert. Analyze the breaking changes and code usages below to assess the impact on the project. Return a structured impact assessment."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Dependency: {dep_name}\n"
-                    f"Current version: {current_version}\n"
-                    f"Latest version: {latest_version}\n\n"
-                    f"{context}"
-                ),
-            },
-        ],
-    )
+    async with get_llm_semaphore():
+        result: ImpactAssessment = await client.chat.completions.create(
+            model=active_model(),
+            response_model=ImpactAssessment,
+            max_retries=2,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a dependency migration expert. Analyze the breaking changes and code usages below to assess the impact on the project. Return a structured impact assessment."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Dependency: {dep_name}\n"
+                        f"Current version: {current_version}\n"
+                        f"Latest version: {latest_version}\n\n"
+                        f"{context}"
+                    ),
+                },
+            ],
+        )
     # Always populate versions from our own args — LLMs routinely omit this field.
     result.versions = {"current": current_version, "latest": latest_version}
     return result

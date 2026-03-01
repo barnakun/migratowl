@@ -149,7 +149,7 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
 async def scan_dependencies_node(state: AnalysisState) -> Command:
     """Scan project and find outdated dependencies."""
     deps = await scanner.scan_project(state["project_path"])
-    outdated = await registry.find_outdated(deps)
+    outdated, registry_errors = await registry.find_outdated(deps)
 
     dep_dicts = [
         {
@@ -163,7 +163,10 @@ async def scan_dependencies_node(state: AnalysisState) -> Command:
         for od in outdated
     ]
 
-    return Command(goto="fan_out", update={"dependencies": dep_dicts})
+    update: dict = {"dependencies": dep_dicts}
+    if registry_errors:
+        update["errors"] = registry_errors
+    return Command(goto="fan_out", update=update)
 
 
 def fan_out_node(state: AnalysisState) -> None:

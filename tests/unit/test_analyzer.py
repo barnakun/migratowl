@@ -87,7 +87,11 @@ class TestScanDependenciesNode:
 
         with (
             patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
-            patch("migratowl.core.analyzer.registry.find_outdated", new_callable=AsyncMock, return_value=mock_outdated),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
         ):
             state = _make_parent_state()
             result = await scan_dependencies_node(state)
@@ -549,7 +553,11 @@ class TestScanDependenciesNodeUrls:
 
         with (
             patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
-            patch("migratowl.core.analyzer.registry.find_outdated", new_callable=AsyncMock, return_value=mock_outdated),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
         ):
             state = _make_parent_state()
             result = await scan_dependencies_node(state)
@@ -671,7 +679,11 @@ class TestAnalyze:
 
         with (
             patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
-            patch("migratowl.core.analyzer.registry.find_outdated", new_callable=AsyncMock, return_value=mock_outdated),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
             patch(
                 "migratowl.core.analyzer.changelog.fetch_changelog",
                 new_callable=AsyncMock,
@@ -722,7 +734,11 @@ class TestAnalyze:
 
         with (
             patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
-            patch("migratowl.core.analyzer.registry.find_outdated", new_callable=AsyncMock, return_value=mock_outdated),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
             patch(
                 "migratowl.core.analyzer.changelog.fetch_changelog",
                 new_callable=AsyncMock,
@@ -795,7 +811,11 @@ class TestAnalyze:
 
         with (
             patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
-            patch("migratowl.core.analyzer.registry.find_outdated", new_callable=AsyncMock, return_value=mock_outdated),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
             patch(
                 "migratowl.core.analyzer.changelog.fetch_changelog",
                 new_callable=AsyncMock,
@@ -817,3 +837,66 @@ class TestAnalyze:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed["project_path"] == "/tmp/myproject"
+
+# ---------------------------------------------------------------------------
+# scan_dependencies_node — registry error propagation
+# ---------------------------------------------------------------------------
+
+
+class TestScanDependenciesRegistryErrors:
+    @pytest.mark.asyncio
+    async def test_registry_errors_propagate_into_state(self) -> None:
+        """Failed registry lookups must be put into AnalysisState['errors']."""
+        from migratowl.core.analyzer import scan_dependencies_node
+
+        mock_deps = [
+            Dependency(name="bad-pkg", current_version="1.0.0", ecosystem=Ecosystem.PYTHON, manifest_path="req.txt"),
+        ]
+        registry_errors = ["Registry query failed for bad-pkg: Not Found"]
+
+        with (
+            patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=([], registry_errors),
+            ),
+        ):
+            state = _make_parent_state()
+            result = await scan_dependencies_node(state)
+
+        assert isinstance(result, Command)
+        assert "errors" in result.update
+        assert len(result.update["errors"]) == 1
+        assert "bad-pkg" in result.update["errors"][0]
+
+    @pytest.mark.asyncio
+    async def test_no_errors_when_all_registry_lookups_succeed(self) -> None:
+        """When all registry lookups succeed, errors list is empty."""
+        from migratowl.core.analyzer import scan_dependencies_node
+
+        mock_deps = [
+            Dependency(name="requests", current_version="2.28.0", ecosystem=Ecosystem.PYTHON, manifest_path="req.txt"),
+        ]
+        mock_outdated = [
+            OutdatedDependency(
+                name="requests",
+                current_version="2.28.0",
+                latest_version="2.31.0",
+                ecosystem=Ecosystem.PYTHON,
+                manifest_path="req.txt",
+            ),
+        ]
+
+        with (
+            patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
+        ):
+            state = _make_parent_state()
+            result = await scan_dependencies_node(state)
+
+        assert result.update.get("errors", []) == []

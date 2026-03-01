@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.6
     embedding_model: str = "text-embedding-3-small"
     local_embedding_model: str = "nomic-embed-text"
+    max_concurrent_deps: int = 20
+    max_concurrent_registry_queries: int = 20
+    max_rag_results: int = 20
+    max_concurrent_llm_calls: int = 5
 
     model_config = {"env_prefix": "MIGRATOWL_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

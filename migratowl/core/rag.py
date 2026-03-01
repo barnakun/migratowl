@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from migratowl.config import active_model, settings
-from migratowl.core.llm import get_client, get_embedding
+from migratowl.core.llm import get_client, get_embedding, get_llm_semaphore
 from migratowl.models.schemas import ChangelogAnalysis, RAGQueryResult
 
 # Safe sub-chunk size for embedding. RST/technical content tokenizes at ~2 chars/token,
@@ -14,10 +14,10 @@ from migratowl.models.schemas import ChangelogAnalysis, RAGQueryResult
 # no content is discarded.
 EMBED_CHUNK_CHARS = 4_000
 
-# Maximum chunks returned per RAG query. None (default) means retrieve every chunk
-# stored for the dependency — best recall, slightly more tokens sent to the LLM.
-# Set to a positive int (e.g. 10) to cap results and reduce LLM prompt size.
-RAG_N_RESULTS: int | None = None
+# Maximum chunks returned per RAG query. Capped at settings.max_rag_results (default 20)
+# to prevent context overflow on large changelogs. Override via MIGRATOWL_MAX_RAG_RESULTS
+# or pass n_results=None explicitly to retrieve all stored chunks for a dependency.
+RAG_N_RESULTS: int | None = settings.max_rag_results
 
 
 def _import_chromadb() -> Any:
@@ -97,21 +97,22 @@ async def query(
     combined_text = "\n\n---\n\n".join(documents)
 
     instructor_client = get_client()
-    analysis: ChangelogAnalysis = await instructor_client.chat.completions.create(
-        model=active_model(),
-        response_model=ChangelogAnalysis,
-        max_retries=2,
-        messages=[  # type: ignore[arg-type]
-            {
-                "role": "system",
-                "content": "You are a dependency migration expert. Analyze the following changelog excerpts and identify breaking changes, deprecations, and new features.",
-            },
-            {
-                "role": "user",
-                "content": f"Analyze these changelog excerpts for {dep_name}:\n\n{combined_text}",
-            },
-        ],
-    )
+    async with get_llm_semaphore():
+        analysis: ChangelogAnalysis = await instructor_client.chat.completions.create(
+            model=active_model(),
+            response_model=ChangelogAnalysis,
+            max_retries=2,
+            messages=[  # type: ignore[arg-type]
+                {
+                    "role": "system",
+                    "content": "You are a dependency migration expert. Analyze the following changelog excerpts and identify breaking changes, deprecations, and new features.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Analyze these changelog excerpts for {dep_name}:\n\n{combined_text}",
+                },
+            ],
+        )
 
     return RAGQueryResult(
         breaking_changes=analysis.breaking_changes,

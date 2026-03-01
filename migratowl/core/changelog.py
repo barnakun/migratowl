@@ -197,30 +197,46 @@ async def _fetch_from_github(repository_url: str) -> str:
     raise FileNotFoundError(f"No changelog found for {owner}/{repo}")
 
 
+def _parse_next_link(link_header: str | None) -> str | None:
+    """Extract the URL for rel="next" from a GitHub API Link header.
+
+    Returns None if there is no next page.
+    """
+    if not link_header:
+        return None
+    m = re.search(r'<([^>]+)>;\s*rel="next"', link_header)
+    return m.group(1) if m else None
+
+
 async def _fetch_from_github_releases(repository_url: str) -> str:
     """Fetch release notes from the GitHub Releases API.
 
-    Constructs changelog text from release ``body`` fields, skipping drafts and
-    pre-releases.  Raises ``FileNotFoundError`` if no usable releases exist.
-    Sends an ``Authorization`` header when ``MIGRATOWL_GITHUB_TOKEN`` is set.
+    Follows ``Link: <next>`` pagination headers to retrieve all releases, not
+    just the first 100.  Constructs changelog text from release ``body`` fields,
+    skipping drafts and pre-releases.  Raises ``FileNotFoundError`` if no
+    usable releases exist.  Sends an ``Authorization`` header when
+    ``MIGRATOWL_GITHUB_TOKEN`` is set.
     """
     match = re.search(r"github\.com[/:]([^/]+)/([^/.#]+)", repository_url)
     if not match:
         raise ValueError(f"Cannot parse GitHub URL: {repository_url}")
 
     owner, repo = match.group(1), match.group(2)
-    api_url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100"
+    url: str | None = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100"
 
     headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
     if settings.github_token:
         headers["Authorization"] = f"Bearer {settings.github_token}"
 
+    all_releases: list[dict] = []
     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-        response = await client.get(api_url, headers=headers)
-        response.raise_for_status()
-        releases = response.json()
+        while url is not None:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            all_releases.extend(response.json())
+            url = _parse_next_link(response.headers.get("Link"))
 
-    usable = [r for r in releases if not r.get("draft") and not r.get("prerelease")]
+    usable = [r for r in all_releases if not r.get("draft") and not r.get("prerelease")]
     if not usable:
         raise FileNotFoundError(f"No releases found for {owner}/{repo}")
 

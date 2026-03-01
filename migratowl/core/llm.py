@@ -11,6 +11,19 @@ from migratowl.config import settings
 # "connection refused" / overload errors when multiple deps are analysed in parallel.
 _ollama_semaphore = asyncio.Semaphore(1)
 
+# Gate all LLM chat completion calls to prevent 429 TPM errors when many deps
+# are analysed concurrently. Configurable via MIGRATOWL_MAX_CONCURRENT_LLM_CALLS.
+# Lazily initialised so it reads settings at first use, not at import time.
+_llm_semaphore: asyncio.Semaphore | None = None
+
+
+def get_llm_semaphore() -> asyncio.Semaphore:
+    """Return the module-level semaphore that gates concurrent LLM calls."""
+    global _llm_semaphore
+    if _llm_semaphore is None:
+        _llm_semaphore = asyncio.Semaphore(settings.max_concurrent_llm_calls)
+    return _llm_semaphore
+
 
 def _create_client() -> instructor.AsyncInstructor:
     """Create an Instructor-wrapped async OpenAI client."""
@@ -56,7 +69,8 @@ async def get_embedding(text: str) -> list[float]:
         async with _ollama_semaphore:
             response = await raw_client.embeddings.create(model=model, input=text)
     else:
-        response = await raw_client.embeddings.create(model=model, input=text)
+        async with get_llm_semaphore():
+            response = await raw_client.embeddings.create(model=model, input=text)
     return response.data[0].embedding
 
 

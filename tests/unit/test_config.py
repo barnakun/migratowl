@@ -69,3 +69,36 @@ class TestSettingsSingleton:
         from migratowl.config import settings
 
         assert isinstance(settings, Settings)
+
+
+class TestScalabilitySettings:
+    def test_default_max_concurrent_deps(self) -> None:
+        s = Settings(openai_api_key="test")
+        assert s.max_concurrent_deps == 20
+
+    def test_default_max_concurrent_registry_queries(self) -> None:
+        s = Settings(openai_api_key="test")
+        assert s.max_concurrent_registry_queries == 20
+
+    def test_default_max_rag_results(self) -> None:
+        s = Settings(openai_api_key="test")
+        assert s.max_rag_results == 20
+
+    def test_max_concurrent_deps_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MIGRATOWL_MAX_CONCURRENT_DEPS", "50")
+        s = Settings()
+        assert s.max_concurrent_deps == 50
+
+    def test_max_rag_results_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MIGRATOWL_MAX_RAG_RESULTS", "10")
+        s = Settings()
+        assert s.max_rag_results == 10
+
+    def test_default_max_concurrent_llm_calls(self) -> None:
+        s = Settings(openai_api_key="test")
+        assert s.max_concurrent_llm_calls == 5
+
+    def test_max_concurrent_llm_calls_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MIGRATOWL_MAX_CONCURRENT_LLM_CALLS", "2")
+        s = Settings()
+        assert s.max_concurrent_llm_calls == 2

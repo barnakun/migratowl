@@ -183,3 +183,41 @@ class TestBuildImpactContext:
         assert "result = old_func(x)" in context
         assert "src/utils.py" in context
         assert "data = parse(raw)" in context
+
+
+class TestAssessImpactLLMSemaphore:
+    @pytest.mark.asyncio
+    async def test_assess_impact_acquires_llm_semaphore(self) -> None:
+        """assess_impact must hold the LLM semaphore while making the LLM call."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_response = ImpactAssessment(
+            dep_name="requests",
+            versions={"current": "1.0.0", "latest": "2.0.0"},
+            impacts=[],
+            summary="test",
+            overall_severity=Severity.INFO,
+        )
+
+        mock_sem = MagicMock()
+        mock_sem.__aenter__ = AsyncMock(return_value=None)
+        mock_sem.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("migratowl.core.impact.get_llm_semaphore", return_value=mock_sem),
+            patch(
+                "migratowl.core.impact.client.chat.completions.create",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            await assess_impact(
+                dep_name="requests",
+                current_version="1.0.0",
+                latest_version="2.0.0",
+                breaking_changes=[_make_breaking_change()],
+                code_usages=[_make_code_usage()],
+            )
+
+        mock_sem.__aenter__.assert_called_once()
+        mock_sem.__aexit__.assert_called_once()
