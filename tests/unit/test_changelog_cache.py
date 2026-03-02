@@ -56,9 +56,7 @@ class TestGetCachedChangelog:
 
         # Write a cache entry with fetched_at far in the past
         cache_file = cache_dir / "requests.json"
-        cache_file.write_text(
-            json.dumps({"text": "old changelog", "warnings": [], "fetched_at": 0})
-        )
+        cache_file.write_text(json.dumps({"text": "old changelog", "warnings": [], "fetched_at": 0}))
 
         with patch("migratowl.core.changelog_cache.settings") as mock_settings:
             mock_settings.changelog_cache_path = str(cache_dir)
@@ -178,6 +176,31 @@ class TestSetCachedChangelog:
         assert result is not None
         assert result[0] == "new text"
         assert result[1] == []
+
+    def test_safe_filename_handles_colons_and_spaces(self, tmp_path: Path) -> None:
+        """Dep names with colons and spaces are sanitized to safe filenames."""
+        with patch("migratowl.core.changelog_cache.settings") as mock_settings:
+            mock_settings.changelog_cache_path = str(tmp_path / "cl-cache")
+            mock_settings.changelog_cache_ttl_minutes = 1440
+
+            from migratowl.core.changelog_cache import get_cached_changelog, set_cached_changelog
+
+            set_cached_changelog("name:with:colons", "text1", [])
+            set_cached_changelog("name with spaces", "text2", [])
+            set_cached_changelog("@types/react", "text3", [])
+
+            r1 = get_cached_changelog("name:with:colons")
+            r2 = get_cached_changelog("name with spaces")
+            r3 = get_cached_changelog("@types/react")
+
+        assert r1 is not None and r1[0] == "text1"
+        assert r2 is not None and r2[0] == "text2"
+        assert r3 is not None and r3[0] == "text3"
+
+        # Verify no subdirectories were created
+        cache_dir = tmp_path / "cl-cache"
+        for item in cache_dir.iterdir():
+            assert item.is_file()
 
     def test_stored_file_contains_fetched_at_timestamp(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "cl-cache"

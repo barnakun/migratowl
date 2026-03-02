@@ -238,11 +238,9 @@ class TestEmbedChangelog:
 
 class TestQueryNResults:
     @pytest.mark.asyncio
-    async def test_none_n_results_queries_all_dep_chunks(self) -> None:
-        """n_results=None must retrieve all chunks stored for that dep."""
+    async def test_none_n_results_defaults_to_settings_max_rag_results(self) -> None:
+        """n_results=None must resolve to settings.max_rag_results at runtime."""
         mock_collection = MagicMock()
-        # Simulate 12 chunks stored for flask
-        mock_collection.get.return_value = {"ids": [f"flask:1.0:{i}" for i in range(12)]}
         mock_collection.query.return_value = {
             "documents": [["some text"]],
             "distances": [[0.1]],
@@ -257,13 +255,16 @@ class TestQueryNResults:
             patch("migratowl.core.rag.get_collection", return_value=mock_collection),
             patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
             patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.settings") as mock_settings,
         ):
+            mock_settings.max_rag_results = 15
+            mock_settings.summarize_threshold = 32_000
             from migratowl.core.rag import query
 
             await query("breaking changes", "flask", n_results=None)
 
         query_kwargs = mock_collection.query.call_args.kwargs
-        assert query_kwargs["n_results"] == 12
+        assert query_kwargs["n_results"] == 15
 
     @pytest.mark.asyncio
     async def test_explicit_n_results_passed_directly(self) -> None:
@@ -292,10 +293,13 @@ class TestQueryNResults:
         assert query_kwargs["n_results"] == 7
 
     def test_default_n_results_uses_settings(self) -> None:
-        """RAG_N_RESULTS constant must use settings.max_rag_results (default 20)."""
-        from migratowl.core.rag import RAG_N_RESULTS
+        """Default n_results parameter is None, resolved to settings.max_rag_results at runtime."""
+        import inspect
 
-        assert RAG_N_RESULTS == 20
+        from migratowl.core.rag import query
+
+        sig = inspect.signature(query)
+        assert sig.parameters["n_results"].default is None
 
 
 class TestQuery:
@@ -472,9 +476,9 @@ class TestSummarization:
     @pytest.mark.asyncio
     async def test_large_text_triggers_summarization(self) -> None:
         """Combined text over the threshold must be summarized before analysis."""
-        from migratowl.core.rag import SUMMARIZE_THRESHOLD_CHARS
+        from migratowl.config import settings
 
-        large_doc = "x" * (SUMMARIZE_THRESHOLD_CHARS + 1)
+        large_doc = "x" * (settings.summarize_threshold + 1)
         mock_collection = MagicMock()
         mock_collection.query.return_value = {
             "documents": [[large_doc]],
@@ -489,7 +493,9 @@ class TestSummarization:
             patch("migratowl.core.rag.get_collection", return_value=mock_collection),
             patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
             patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
-            patch("migratowl.core.rag._summarize_changelog", new_callable=AsyncMock, return_value="concise summary") as mock_summarize,
+            patch(
+                "migratowl.core.rag._summarize_changelog", new_callable=AsyncMock, return_value="concise summary"
+            ) as mock_summarize,
         ):
             from migratowl.core.rag import query
 
@@ -503,9 +509,9 @@ class TestSummarization:
     @pytest.mark.asyncio
     async def test_summarized_text_passed_to_analysis_llm(self) -> None:
         """When summarization runs, the analysis LLM must receive the summary, not the raw text."""
-        from migratowl.core.rag import SUMMARIZE_THRESHOLD_CHARS
+        from migratowl.config import settings
 
-        large_doc = "y" * (SUMMARIZE_THRESHOLD_CHARS + 1)
+        large_doc = "y" * (settings.summarize_threshold + 1)
         mock_collection = MagicMock()
         mock_collection.query.return_value = {
             "documents": [[large_doc]],
@@ -545,9 +551,7 @@ class TestQueryLLMSemaphore:
             "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
         }
 
-        mock_analysis = ChangelogAnalysis(
-            breaking_changes=[], deprecations=[], new_features=[], confidence=0.5
-        )
+        mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.5)
         mock_instructor_client = MagicMock()
         mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
 

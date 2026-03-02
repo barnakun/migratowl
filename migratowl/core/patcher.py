@@ -2,8 +2,8 @@
 
 import difflib
 
-from migratowl.config import active_model
-from migratowl.core.llm import client
+from migratowl.config import active_model, settings
+from migratowl.core.llm import get_client, get_llm_semaphore
 from migratowl.models.schemas import ImpactAssessment, PatchSet
 
 
@@ -28,29 +28,31 @@ async def _generate_patch_for_dep(assessment: ImpactAssessment, project_path: st
     """Generate a PatchSet for a single dependency using the LLM."""
     impacts_text = _build_impacts_context(assessment)
 
-    result: PatchSet = await client.chat.completions.create(
-        model=active_model(),
-        response_model=PatchSet,
-        max_retries=2,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a code migration expert. Given the impact assessment below, generate concrete code patches that fix the breaking changes. Return a PatchSet with file-level patches showing original and patched code."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Project path: {project_path}\n"
-                    f"Dependency: {assessment.dep_name}\n"
-                    f"Current version: {assessment.versions.get('current', '?')}\n"
-                    f"Latest version: {assessment.versions.get('latest', '?')}\n\n"
-                    f"{impacts_text}"
-                ),
-            },
-        ],
-    )
+    instructor_client = get_client()
+    async with get_llm_semaphore():
+        result: PatchSet = await instructor_client.chat.completions.create(
+            model=active_model(),
+            response_model=PatchSet,
+            max_retries=settings.max_retries,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a code migration expert. Given the impact assessment below, generate concrete code patches that fix the breaking changes. Return a PatchSet with file-level patches showing original and patched code."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Project path: {project_path}\n"
+                        f"Dependency: {assessment.dep_name}\n"
+                        f"Current version: {assessment.versions.get('current', '?')}\n"
+                        f"Latest version: {assessment.versions.get('latest', '?')}\n\n"
+                        f"{impacts_text}"
+                    ),
+                },
+            ],
+        )
     return result
 
 

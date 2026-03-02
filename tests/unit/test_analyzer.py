@@ -55,7 +55,6 @@ def _make_dep_state(**overrides) -> dict:
         "rag_confidence": 0.0,
         "retry_count": 0,
         "code_usages": [],
-        "impact": {},
         "warnings": [],
     }
     state.update(overrides)
@@ -760,6 +759,10 @@ class TestAnalyze:
             patch("migratowl.core.analyzer.rag.query", new_callable=AsyncMock, return_value=mock_rag_result),
             patch("migratowl.core.analyzer.code_parser.find_usages", new_callable=AsyncMock, return_value=mock_usages),
             patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_impact),
+            patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=None),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
             patch("migratowl.core.analyzer.report.build_report", return_value=mock_report),
             patch("migratowl.core.analyzer.report.export_json", return_value=mock_report.model_dump_json(indent=2)),
         ):
@@ -815,6 +818,10 @@ class TestAnalyze:
             patch("migratowl.core.analyzer.rag.query", new_callable=AsyncMock, return_value=mock_rag_result),
             patch("migratowl.core.analyzer.code_parser.find_usages", new_callable=AsyncMock, return_value=[]),
             patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_impact),
+            patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=None),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
         ):
             result = await analyze("/tmp/myproject", fix_mode=False)
 
@@ -892,6 +899,10 @@ class TestAnalyze:
             patch("migratowl.core.analyzer.rag.query", new_callable=AsyncMock, return_value=mock_rag_result),
             patch("migratowl.core.analyzer.code_parser.find_usages", new_callable=AsyncMock, return_value=[]),
             patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_impact),
+            patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=None),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
             patch("migratowl.core.analyzer.report.build_report", return_value=mock_report),
             patch("migratowl.core.analyzer.report.export_json", return_value=mock_report.model_dump_json(indent=2)),
         ):
@@ -900,6 +911,7 @@ class TestAnalyze:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed["project_path"] == "/tmp/myproject"
+
 
 # ---------------------------------------------------------------------------
 # scan_dependencies_node — registry error propagation
@@ -1023,7 +1035,7 @@ class TestAssessImpactNodeCacheSave:
 
         with (
             patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_assessment),
-            patch("migratowl.core.analyzer.cache.set_cached_assessment") as mock_set,
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock) as mock_set,
         ):
             state = _make_dep_state(
                 dep_name="requests",
@@ -1049,6 +1061,7 @@ class TestAssessImpactNodeCacheSave:
 class TestDepSemaphore:
     def test_get_dep_semaphore_returns_asyncio_semaphore(self) -> None:
         import asyncio
+
         import migratowl.core.analyzer as analyzer_module
         from migratowl.core.analyzer import get_dep_semaphore
 
@@ -1077,6 +1090,7 @@ class TestDepSemaphore:
     async def test_fetch_changelog_node_caps_concurrent_executions(self) -> None:
         """At most max_concurrent_deps fetch_changelog nodes run simultaneously."""
         import asyncio
+
         import migratowl.core.analyzer as analyzer_module
         from migratowl.core.analyzer import fetch_changelog_node
 
@@ -1095,6 +1109,8 @@ class TestDepSemaphore:
 
         with (
             patch("migratowl.core.analyzer.changelog.fetch_changelog", side_effect=slow_fetch),
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
             patch("migratowl.core.analyzer.settings") as mock_settings,
         ):
             mock_settings.max_concurrent_deps = max_concurrent

@@ -228,6 +228,13 @@ class TestFilterChunksByVersionRange:
         filtered = filter_chunks_by_version_range(chunks, "2.0.0", "2.0.0")
         assert filtered == []
 
+    def test_prerelease_version_does_not_crash(self) -> None:
+        """Non-numeric version parts like '1.0.0-beta.1' must not raise ValueError."""
+        chunks = chunk_changelog_by_version(SAMPLE_CHANGELOG)
+        filtered = filter_chunks_by_version_range(chunks, "1.0.0-beta.1", "3.0.0")
+        # packaging.version.Version handles PEP 440 pre-releases correctly
+        assert len(filtered) >= 0  # no crash is the main assertion
+
 
 class TestFetchFromUrl:
     @pytest.mark.asyncio
@@ -419,9 +426,7 @@ class TestFetchFromGithub:
         with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value.__aenter__.return_value
             mock_client.get = AsyncMock(side_effect=fake_get)
-            result = await _fetch_from_github(
-                "https://github.com/Goldziher/tree-sitter-language-pack#readme"
-            )
+            result = await _fetch_from_github("https://github.com/Goldziher/tree-sitter-language-pack#readme")
 
         assert all("#" not in u for u in fetched_urls), "Fragment leaked into raw URL"
         assert "Initial" in result
@@ -718,9 +723,7 @@ class TestFetchFromGithubReleases:
         with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value.__aenter__.return_value
             mock_client.get = AsyncMock(side_effect=fake_get)
-            await _fetch_from_github_releases(
-                "https://github.com/Goldziher/tree-sitter-language-pack#readme"
-            )
+            await _fetch_from_github_releases("https://github.com/Goldziher/tree-sitter-language-pack#readme")
 
         assert len(captured_urls) == 1
         assert captured_urls[0] == (

@@ -1,6 +1,6 @@
 """Tests for impact assessment."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -89,11 +89,10 @@ class TestAssessImpactCallsLLM:
             overall_severity=Severity.CRITICAL,
         )
 
-        with patch(
-            "migratowl.core.impact.client.chat.completions.create",
-            new_callable=AsyncMock,
-            return_value=mock_response,
-        ) as mock_create:
+        mock_instructor = MagicMock()
+        mock_instructor.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        with patch("migratowl.core.impact.get_client", return_value=mock_instructor):
             result = await assess_impact(
                 dep_name="requests",
                 current_version="1.0.0",
@@ -102,6 +101,7 @@ class TestAssessImpactCallsLLM:
                 code_usages=[_make_code_usage()],
             )
 
+            mock_create = mock_instructor.chat.completions.create
             mock_create.assert_called_once()
             call_kwargs = mock_create.call_args.kwargs
             assert call_kwargs["response_model"] is ImpactAssessment
@@ -122,11 +122,10 @@ class TestAssessImpactVersionsPopulated:
             overall_severity=Severity.INFO,
         )
 
-        with patch(
-            "migratowl.core.impact.client.chat.completions.create",
-            new_callable=AsyncMock,
-            return_value=mock_response,
-        ):
+        mock_instructor = MagicMock()
+        mock_instructor.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        with patch("migratowl.core.impact.get_client", return_value=mock_instructor):
             result = await assess_impact(
                 dep_name="requests",
                 current_version="1.0.0",
@@ -189,8 +188,6 @@ class TestAssessImpactLLMSemaphore:
     @pytest.mark.asyncio
     async def test_assess_impact_acquires_llm_semaphore(self) -> None:
         """assess_impact must hold the LLM semaphore while making the LLM call."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
         mock_response = ImpactAssessment(
             dep_name="requests",
             versions={"current": "1.0.0", "latest": "2.0.0"},
@@ -203,13 +200,12 @@ class TestAssessImpactLLMSemaphore:
         mock_sem.__aenter__ = AsyncMock(return_value=None)
         mock_sem.__aexit__ = AsyncMock(return_value=False)
 
+        mock_instructor = MagicMock()
+        mock_instructor.chat.completions.create = AsyncMock(return_value=mock_response)
+
         with (
             patch("migratowl.core.impact.get_llm_semaphore", return_value=mock_sem),
-            patch(
-                "migratowl.core.impact.client.chat.completions.create",
-                new_callable=AsyncMock,
-                return_value=mock_response,
-            ),
+            patch("migratowl.core.impact.get_client", return_value=mock_instructor),
         ):
             await assess_impact(
                 dep_name="requests",

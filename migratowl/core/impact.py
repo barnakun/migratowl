@@ -1,7 +1,7 @@
 """Impact assessment — cross-references breaking changes with code usages."""
 
-from migratowl.config import active_model
-from migratowl.core.llm import client, get_llm_semaphore
+from migratowl.config import active_model, settings
+from migratowl.core.llm import get_client, get_llm_semaphore
 from migratowl.models.schemas import (
     BreakingChange,
     CodeUsage,
@@ -33,11 +33,12 @@ async def assess_impact(
 
     context = _build_impact_context(breaking_changes, code_usages)
 
+    instructor_client = get_client()
     async with get_llm_semaphore():
-        result: ImpactAssessment = await client.chat.completions.create(
+        result: ImpactAssessment = await instructor_client.chat.completions.create(
             model=active_model(),
             response_model=ImpactAssessment,
-            max_retries=2,
+            max_retries=settings.max_retries,
             messages=[
                 {
                     "role": "system",

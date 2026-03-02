@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -10,8 +11,12 @@ from migratowl.config import settings
 
 
 def _safe_filename(dep_name: str) -> str:
-    """Convert a dep name to a safe flat filename (e.g. @expo/vector-icons → @expo__vector-icons)."""
-    return dep_name.replace("/", "__")
+    """Convert a dep name to a safe flat filename.
+
+    Keeps alphanumerics, underscores, dots, ``@``, and hyphens.
+    Everything else (``/``, ``:``, spaces, etc.) becomes ``__``.
+    """
+    return re.sub(r"[^\w.@-]", "__", dep_name)
 
 
 def _cache_file(dep_name: str) -> Path:

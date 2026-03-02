@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
 
 from migratowl.config import settings
+
+_cache_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_cache_lock(project_path: str) -> asyncio.Lock:
+    """Return a lock for the given project's cache file.
+
+    Safe without additional locking because asyncio dict mutation is atomic
+    within a single event loop tick (no await between check and assignment).
+    """
+    return _cache_locks.setdefault(project_path, asyncio.Lock())
 
 
 def _cache_file(project_path: str) -> Path:
@@ -38,7 +50,7 @@ def get_cached_assessment(
     return data.get(_dep_key(dep_name, current_version, latest_version))
 
 
-def set_cached_assessment(
+async def set_cached_assessment(
     project_path: str,
     dep_name: str,
     current_version: str,
@@ -46,10 +58,11 @@ def set_cached_assessment(
     assessment: dict,
 ) -> None:
     """Persist an impact assessment to the project cache."""
-    cache_file = _cache_file(project_path)
-    try:
-        data: dict = json.loads(cache_file.read_text()) if cache_file.exists() else {}
-    except (json.JSONDecodeError, OSError):
-        data = {}
-    data[_dep_key(dep_name, current_version, latest_version)] = assessment
-    cache_file.write_text(json.dumps(data, indent=2))
+    async with _get_cache_lock(project_path):
+        cache_file = _cache_file(project_path)
+        try:
+            data: dict = json.loads(cache_file.read_text()) if cache_file.exists() else {}
+        except (json.JSONDecodeError, OSError):
+            data = {}
+        data[_dep_key(dep_name, current_version, latest_version)] = assessment
+        cache_file.write_text(json.dumps(data, indent=2))

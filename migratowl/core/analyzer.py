@@ -23,7 +23,6 @@ from migratowl.models.schemas import (
 )
 
 MAX_RAG_RETRIES = 3
-CONFIDENCE_THRESHOLD = settings.confidence_threshold
 
 # Lazily initialised semaphore that caps the number of deps running through the
 # expensive pipeline (changelog fetch → embed → RAG → impact) concurrently.
@@ -119,7 +118,7 @@ async def rag_analyze_node(state: DepAnalysisState) -> Command:
 
     rag_results = [bc.model_dump() for bc in result.breaking_changes]
 
-    if result.confidence < CONFIDENCE_THRESHOLD and state["retry_count"] < MAX_RAG_RETRIES:
+    if result.confidence < settings.confidence_threshold and state["retry_count"] < MAX_RAG_RETRIES:
         return Command(
             goto="refine_query",
             update={
@@ -175,7 +174,7 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
     assessment_dict = assessment.model_dump()
     assessment_dict["warnings"] = all_warnings
 
-    cache.set_cached_assessment(
+    await cache.set_cached_assessment(
         state["project_path"],
         state["dep_name"],
         state["current_version"],
@@ -236,7 +235,6 @@ def fan_out_deps(state: AnalysisState) -> list[Send]:
                 "rag_confidence": 0.0,
                 "retry_count": 0,
                 "code_usages": [],
-                "impact": {},
                 "impact_assessments": [],
                 "warnings": [],
             },
@@ -287,23 +285,6 @@ async def generate_report_node(state: AnalysisState) -> Command:
 # ---------------------------------------------------------------------------
 
 
-def _build_dep_worker_compiled() -> Any:
-    """Build and compile the per-dependency worker subgraph."""
-    builder = StateGraph(DepAnalysisState)
-
-    builder.add_node("check_cache", check_cache_node)
-    builder.add_node("fetch_changelog", fetch_changelog_node)
-    builder.add_node("embed_changelog", embed_changelog_node)
-    builder.add_node("rag_analyze", rag_analyze_node)
-    builder.add_node("refine_query", refine_query_node)
-    builder.add_node("parse_code", parse_code_node)
-    builder.add_node("assess_impact", assess_impact_node)
-
-    builder.set_entry_point("check_cache")
-
-    return builder.compile()
-
-
 def build_dep_worker_graph() -> StateGraph:
     """Build the per-dependency worker StateGraph (not compiled)."""
     builder = StateGraph(DepAnalysisState)
@@ -319,6 +300,11 @@ def build_dep_worker_graph() -> StateGraph:
     builder.set_entry_point("check_cache")
 
     return builder
+
+
+def _build_dep_worker_compiled() -> Any:
+    """Build and compile the per-dependency worker subgraph."""
+    return build_dep_worker_graph().compile()
 
 
 def build_analysis_graph() -> Any:

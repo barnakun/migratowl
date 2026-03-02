@@ -15,17 +15,6 @@ from migratowl.models.schemas import ChangelogAnalysis, ChangelogSummary, RAGQue
 # no content is discarded.
 EMBED_CHUNK_CHARS = 4_000
 
-# Maximum chunks returned per RAG query. Capped at settings.max_rag_results (default 20)
-# to prevent context overflow on large changelogs. Override via MIGRATOWL_MAX_RAG_RESULTS
-# or pass n_results=None explicitly to retrieve all stored chunks for a dependency.
-RAG_N_RESULTS: int | None = settings.max_rag_results
-
-# Combined chunk text exceeding this character count is summarized before being sent
-# to the analysis LLM. 32 000 chars ≈ 8 000 tokens — well within any model's context
-# window while still preserving all breaking-change detail. Configurable via
-# MIGRATOWL_SUMMARIZE_THRESHOLD.
-SUMMARIZE_THRESHOLD_CHARS: int = settings.summarize_threshold
-
 
 def _import_chromadb() -> Any:
     """Lazy import chromadb to avoid import errors in test environments."""
@@ -85,7 +74,7 @@ async def _summarize_changelog(text: str, dep_name: str) -> str:
         result: ChangelogSummary = await instructor_client.chat.completions.create(
             model=active_model(),
             response_model=ChangelogSummary,
-            max_retries=2,
+            max_retries=settings.max_retries,
             messages=[
                 {
                     "role": "system",
@@ -107,22 +96,20 @@ async def _summarize_changelog(text: str, dep_name: str) -> str:
 async def query(
     query_text: str,
     dep_name: str,
-    n_results: int | None = RAG_N_RESULTS,
+    n_results: int | None = None,
     project_path: str = "",
 ) -> RAGQueryResult:
     """Query changelog embeddings and analyze with LLM.
 
     Returns RAGQueryResult with breaking changes, confidence, and source chunks.
 
-    n_results=None (default) retrieves every stored chunk for dep_name, giving
-    the LLM the full changelog context. Pass an int to cap results.
+    n_results defaults to settings.max_rag_results at runtime.
     """
+    if n_results is None:
+        n_results = settings.max_rag_results
+
     collection = get_collection(project_path)
     query_embedding = await get_embedding(query_text)
-
-    if n_results is None:
-        stored = collection.get(where={"dep_name": dep_name})
-        n_results = max(1, len(stored["ids"]))
 
     results = collection.query(
         query_embeddings=[query_embedding],
@@ -137,7 +124,7 @@ async def query(
 
     combined_text = "\n\n---\n\n".join(documents)
 
-    if len(combined_text) > SUMMARIZE_THRESHOLD_CHARS:
+    if len(combined_text) > settings.summarize_threshold:
         combined_text = await _summarize_changelog(combined_text, dep_name)
 
     instructor_client = get_client()
@@ -145,7 +132,7 @@ async def query(
         analysis: ChangelogAnalysis = await instructor_client.chat.completions.create(
             model=active_model(),
             response_model=ChangelogAnalysis,
-            max_retries=2,
+            max_retries=settings.max_retries,
             messages=[  # type: ignore[arg-type]
                 {
                     "role": "system",

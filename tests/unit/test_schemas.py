@@ -205,7 +205,7 @@ class TestTypedDictStates:
     def test_dep_analysis_state_as_dict(self) -> None:
         from migratowl.models.schemas import DepAnalysisState
 
-        state: DepAnalysisState = { # type: ignore[arg-type]
+        state: DepAnalysisState = {  # type: ignore[arg-type]
             "dep_name": "requests",
             "current_version": "2.28.0",
             "latest_version": "2.31.0",

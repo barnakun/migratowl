@@ -182,8 +182,7 @@ async def _fetch_from_github(repository_url: str) -> str:
                     m = _GITHUB_BLOB_RE.search(r.text)
                     if m:
                         raw_url = (
-                            f"https://raw.githubusercontent.com/"
-                            f"{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
+                            f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
                         )
                         try:
                             r2 = await client.get(raw_url)
@@ -404,8 +403,11 @@ def filter_chunks_by_version_range(
         latest = _parse_version(latest_version)
     except InvalidVersion:
         # Fallback: simple tuple comparison
-        current = tuple(int(x) for x in current_version.split("."))  # type: ignore[assignment]
-        latest = tuple(int(x) for x in latest_version.split("."))  # type: ignore[assignment]
+        try:
+            current = tuple(int(x) for x in current_version.split("."))  # type: ignore[assignment]
+            latest = tuple(int(x) for x in latest_version.split("."))  # type: ignore[assignment]
+        except (ValueError, AttributeError):
+            return chunks
 
     filtered = []
     for chunk in chunks:

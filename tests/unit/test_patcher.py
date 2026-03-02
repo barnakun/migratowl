@@ -1,5 +1,6 @@
 """Tests for the patcher module."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -65,18 +66,21 @@ class TestGeneratePatchesMockedLLM:
             unified_diff="",
         )
 
-        with patch(
-            "migratowl.core.patcher.client.chat.completions.create",
-            new_callable=AsyncMock,
-            return_value=mock_patch_set,
-        ) as mock_create:
+        mock_instructor_client = AsyncMock()
+        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_patch_set)
+
+        with (
+            patch("migratowl.core.patcher.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.patcher.get_llm_semaphore", return_value=asyncio.Semaphore(1)),
+        ):
+            mock_create = mock_instructor_client.chat.completions.create
             assessments = [_make_assessment()]
             result = await generate_patches(assessments, "/tmp/project")
 
             mock_create.assert_called_once()
             call_kwargs = mock_create.call_args.kwargs
             assert call_kwargs["response_model"] is PatchSet
-            assert call_kwargs["max_retries"] == 2
+            assert call_kwargs["max_retries"] == 2  # settings.max_retries default
 
             assert len(result) == 1
             assert isinstance(result[0], PatchSet)

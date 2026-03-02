@@ -72,6 +72,3 @@ async def get_embedding(text: str) -> list[float]:
         async with get_llm_semaphore():
             response = await raw_client.embeddings.create(model=model, input=text)
     return response.data[0].embedding
-
-
-client = _create_client()

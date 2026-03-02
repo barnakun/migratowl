@@ -26,7 +26,7 @@ class TestScanAndFindOutdated:
         assert len(deps) >= 1
         assert any(d.name == "requests" for d in deps)
 
-        outdated = await registry.find_outdated(deps)
+        outdated, _errors = await registry.find_outdated(deps)
         # requests 2.28.0 is outdated
         assert any(od.name == "requests" for od in outdated)
         for od in outdated:
@@ -42,7 +42,7 @@ class TestChangelogFetchAndChunk:
     async def test_changelog_fetch_and_chunk(self) -> None:
         from migratowl.core.changelog import chunk_changelog_by_version, fetch_changelog
 
-        text = await fetch_changelog(
+        text, _warnings = await fetch_changelog(
             changelog_url=None,
             repository_url="https://github.com/psf/requests",
             dep_name="requests",

@@ -34,11 +34,6 @@ class TestClientCreation:
             with pytest.raises(ValueError, match="MIGRATOWL_OPENAI_API_KEY"):
                 get_client()
 
-    def test_module_level_client_exists(self) -> None:
-        from migratowl.core.llm import client
-
-        assert hasattr(client.chat.completions, "create")
-
 
 class TestOpenAIClientRetries:
     def test_openai_client_has_retry_budget_for_rate_limits(self) -> None:
@@ -174,6 +169,7 @@ class TestGetEmbeddingOpenAISemaphore:
     async def test_openai_embedding_caps_concurrent_calls(self) -> None:
         """Concurrent get_embedding calls with OpenAI must be gated by get_llm_semaphore."""
         import asyncio
+
         import migratowl.core.llm as llm_module
         from migratowl.core.llm import get_embedding
 
@@ -213,6 +209,7 @@ class TestLLMSemaphore:
     def test_get_llm_semaphore_returns_asyncio_semaphore(self) -> None:
         """get_llm_semaphore must return an asyncio.Semaphore."""
         import asyncio
+
         import migratowl.core.llm as llm_module
         from migratowl.core.llm import get_llm_semaphore
 
@@ -227,6 +224,7 @@ class TestLLMSemaphore:
     async def test_llm_semaphore_caps_concurrent_calls(self) -> None:
         """At most max_concurrent_llm_calls coroutines hold the semaphore simultaneously."""
         import asyncio
+
         import migratowl.core.llm as llm_module
         from migratowl.core.llm import get_llm_semaphore
 

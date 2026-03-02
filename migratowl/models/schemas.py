@@ -191,6 +191,5 @@ class DepAnalysisState(TypedDict):
     rag_confidence: float
     retry_count: int
     code_usages: list[dict]
-    impact: dict
     impact_assessments: list[dict]
     warnings: Annotated[list[str], operator.add]
