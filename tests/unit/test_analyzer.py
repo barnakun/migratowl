@@ -278,11 +278,15 @@ class TestFetchChangelogNode:
     async def test_fetch_changelog_passes_urls(self) -> None:
         from migratowl.core.analyzer import fetch_changelog_node
 
-        with patch(
-            "migratowl.core.analyzer.changelog.fetch_changelog",
-            new_callable=AsyncMock,
-            return_value=("changelog text", []),
-        ) as mock_fetch:
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                return_value=("changelog text", []),
+            ) as mock_fetch,
+        ):
             state = _make_dep_state(
                 changelog_url="https://example.com/CHANGELOG.md",
                 repository_url="https://github.com/psf/requests",
@@ -300,11 +304,15 @@ class TestFetchChangelogNode:
     async def test_fetch_changelog_empty_url_passes_none(self) -> None:
         from migratowl.core.analyzer import fetch_changelog_node
 
-        with patch(
-            "migratowl.core.analyzer.changelog.fetch_changelog",
-            new_callable=AsyncMock,
-            return_value=("", []),
-        ) as mock_fetch:
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                return_value=("", []),
+            ) as mock_fetch,
+        ):
             state = _make_dep_state(changelog_url="", repository_url="")
             await fetch_changelog_node(state)
 
@@ -319,10 +327,14 @@ class TestFetchChangelogNode:
         """When fetch_changelog returns warnings, they are stored in state update."""
         from migratowl.core.analyzer import fetch_changelog_node
 
-        with patch(
-            "migratowl.core.analyzer.changelog.fetch_changelog",
-            new_callable=AsyncMock,
-            return_value=("", ["No changelog URL or repository URL provided for requests"]),
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                return_value=("", ["No changelog URL or repository URL provided for requests"]),
+            ),
         ):
             state = _make_dep_state(changelog_url="", repository_url="")
             result = await fetch_changelog_node(state)
@@ -336,15 +348,66 @@ class TestFetchChangelogNode:
         """When fetch_changelog succeeds, warnings list is empty."""
         from migratowl.core.analyzer import fetch_changelog_node
 
-        with patch(
-            "migratowl.core.analyzer.changelog.fetch_changelog",
-            new_callable=AsyncMock,
-            return_value=("## 1.0.0\n- change", []),
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                return_value=("## 1.0.0\n- change", []),
+            ),
         ):
             state = _make_dep_state()
             result = await fetch_changelog_node(state)
 
         assert result.update.get("warnings", []) == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_changelog_node_uses_changelog_cache_on_hit(self) -> None:
+        """When changelog cache has a hit, fetch_changelog is not called."""
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        with (
+            patch(
+                "migratowl.core.analyzer.changelog_cache.get_cached_changelog",
+                return_value=("cached text", ["cached warn"]),
+            ),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
+        ):
+            state = _make_dep_state()
+            result = await fetch_changelog_node(state)
+
+        mock_fetch.assert_not_called()
+        assert result.update["changelog"] == "cached text"
+        assert result.update["warnings"] == ["cached warn"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_changelog_node_saves_to_changelog_cache_on_miss(self) -> None:
+        """When changelog cache misses, fetched text is saved to cache."""
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        with (
+            patch(
+                "migratowl.core.analyzer.changelog_cache.get_cached_changelog",
+                return_value=None,
+            ),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                return_value=("fetched text", ["warn"]),
+            ),
+            patch(
+                "migratowl.core.analyzer.changelog_cache.set_cached_changelog",
+            ) as mock_set,
+        ):
+            state = _make_dep_state()
+            result = await fetch_changelog_node(state)
+
+        mock_set.assert_called_once_with("requests", "fetched text", ["warn"])
+        assert result.update["changelog"] == "fetched text"
 
 
 # ---------------------------------------------------------------------------
@@ -900,3 +963,143 @@ class TestScanDependenciesRegistryErrors:
             result = await scan_dependencies_node(state)
 
         assert result.update.get("errors", []) == []
+
+
+# ---------------------------------------------------------------------------
+# check_cache_node
+# ---------------------------------------------------------------------------
+
+
+class TestCheckCacheNode:
+    @pytest.mark.asyncio
+    async def test_cache_hit_routes_to_end_with_assessment(self) -> None:
+        """A cache hit must skip the full pipeline and return the cached assessment."""
+        from langgraph.graph import END
+
+        from migratowl.core.analyzer import check_cache_node
+
+        cached = {"dep_name": "requests", "summary": "cached", "overall_severity": "info"}
+
+        with patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=cached):
+            state = _make_dep_state()
+            result = await check_cache_node(state)
+
+        assert isinstance(result, Command)
+        assert result.goto == END
+        assert result.update["impact_assessments"] == [cached]
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_routes_to_fetch_changelog(self) -> None:
+        """A cache miss must route to fetch_changelog to run the full pipeline."""
+        from migratowl.core.analyzer import check_cache_node
+
+        with patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=None):
+            state = _make_dep_state()
+            result = await check_cache_node(state)
+
+        assert isinstance(result, Command)
+        assert result.goto == "fetch_changelog"
+        assert result.update == {}
+
+
+# ---------------------------------------------------------------------------
+# assess_impact_node — cache saving
+# ---------------------------------------------------------------------------
+
+
+class TestAssessImpactNodeCacheSave:
+    @pytest.mark.asyncio
+    async def test_saves_assessment_to_cache(self) -> None:
+        """assess_impact_node must persist the assessment to cache after computing it."""
+        from migratowl.core.analyzer import assess_impact_node
+
+        mock_assessment = ImpactAssessment(
+            dep_name="requests",
+            versions={"current": "2.28.0", "latest": "2.31.0"},
+            impacts=[],
+            summary="No impact",
+            overall_severity=Severity.INFO,
+        )
+
+        with (
+            patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_assessment),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment") as mock_set,
+        ):
+            state = _make_dep_state(
+                dep_name="requests",
+                current_version="2.28.0",
+                latest_version="2.31.0",
+                project_path="/tmp/myproject",
+            )
+            await assess_impact_node(state)
+
+        mock_set.assert_called_once()
+        call_kwargs = mock_set.call_args
+        assert call_kwargs.args[0] == "/tmp/myproject"
+        assert call_kwargs.args[1] == "requests"
+        assert call_kwargs.args[2] == "2.28.0"
+        assert call_kwargs.args[3] == "2.31.0"
+
+
+# ---------------------------------------------------------------------------
+# get_dep_semaphore / fetch_changelog_node concurrency cap
+# ---------------------------------------------------------------------------
+
+
+class TestDepSemaphore:
+    def test_get_dep_semaphore_returns_asyncio_semaphore(self) -> None:
+        import asyncio
+        import migratowl.core.analyzer as analyzer_module
+        from migratowl.core.analyzer import get_dep_semaphore
+
+        analyzer_module._dep_semaphore = None
+        with patch("migratowl.core.analyzer.settings") as mock_settings:
+            mock_settings.max_concurrent_deps = 10
+            mock_settings.confidence_threshold = 0.6
+            sem = get_dep_semaphore()
+            assert isinstance(sem, asyncio.Semaphore)
+        analyzer_module._dep_semaphore = None
+
+    def test_get_dep_semaphore_returns_singleton(self) -> None:
+        import migratowl.core.analyzer as analyzer_module
+        from migratowl.core.analyzer import get_dep_semaphore
+
+        analyzer_module._dep_semaphore = None
+        with patch("migratowl.core.analyzer.settings") as mock_settings:
+            mock_settings.max_concurrent_deps = 5
+            mock_settings.confidence_threshold = 0.6
+            s1 = get_dep_semaphore()
+            s2 = get_dep_semaphore()
+            assert s1 is s2
+        analyzer_module._dep_semaphore = None
+
+    @pytest.mark.asyncio
+    async def test_fetch_changelog_node_caps_concurrent_executions(self) -> None:
+        """At most max_concurrent_deps fetch_changelog nodes run simultaneously."""
+        import asyncio
+        import migratowl.core.analyzer as analyzer_module
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        max_concurrent = 5
+        analyzer_module._dep_semaphore = None
+        active = 0
+        peak = 0
+
+        async def slow_fetch(**kwargs):  # noqa: ARG001
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            return ("changelog text", [])
+
+        with (
+            patch("migratowl.core.analyzer.changelog.fetch_changelog", side_effect=slow_fetch),
+            patch("migratowl.core.analyzer.settings") as mock_settings,
+        ):
+            mock_settings.max_concurrent_deps = max_concurrent
+            mock_settings.confidence_threshold = 0.6
+            await asyncio.gather(*[fetch_changelog_node(_make_dep_state()) for _ in range(20)])
+
+        assert peak <= max_concurrent, f"Expected peak ≤ {max_concurrent}, got {peak}"
+        analyzer_module._dep_semaphore = None

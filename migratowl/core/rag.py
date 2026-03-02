@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from migratowl.config import active_model, settings
 from migratowl.core.llm import get_client, get_embedding, get_llm_semaphore
-from migratowl.models.schemas import ChangelogAnalysis, RAGQueryResult
+from migratowl.models.schemas import ChangelogAnalysis, ChangelogSummary, RAGQueryResult
 
 # Safe sub-chunk size for embedding. RST/technical content tokenizes at ~2 chars/token,
 # so 4000 chars ≈ 2000 tokens — safely within nomic-embed-text and text-embedding-3-small
@@ -19,6 +20,12 @@ EMBED_CHUNK_CHARS = 4_000
 # or pass n_results=None explicitly to retrieve all stored chunks for a dependency.
 RAG_N_RESULTS: int | None = settings.max_rag_results
 
+# Combined chunk text exceeding this character count is summarized before being sent
+# to the analysis LLM. 32 000 chars ≈ 8 000 tokens — well within any model's context
+# window while still preserving all breaking-change detail. Configurable via
+# MIGRATOWL_SUMMARIZE_THRESHOLD.
+SUMMARIZE_THRESHOLD_CHARS: int = settings.summarize_threshold
+
 
 def _import_chromadb() -> Any:
     """Lazy import chromadb to avoid import errors in test environments."""
@@ -27,28 +34,31 @@ def _import_chromadb() -> Any:
     return _chromadb
 
 
-def get_collection() -> Any:
+def get_collection(project_path: str = "") -> Any:
     """Get or create the changelogs collection with cosine similarity.
 
-    The collection name is namespaced by the active embedding model so that
-    OpenAI (1536-dim) and Ollama (768-dim) embeddings never share a collection.
+    The collection name is namespaced by both the active embedding model and the
+    project path so that different projects and embedding backends never share a
+    collection.  OpenAI (1536-dim) and Ollama (768-dim) embeddings also remain
+    separated since they are incompatible vector dimensions.
     """
     _chromadb = _import_chromadb()
     client = _chromadb.PersistentClient(path=settings.vectorstore_path)
     model = settings.local_embedding_model if settings.use_local_llm else settings.embedding_model
     safe_model = model.replace("/", "_").replace("-", "_").replace(".", "_")
+    project_hash = hashlib.sha256(project_path.encode()).hexdigest()[:8]
     return client.get_or_create_collection(
-        f"changelogs_{safe_model}",
+        f"changelogs_{safe_model}_{project_hash}",
         metadata={"hnsw:space": "cosine"},
     )
 
 
-async def embed_changelog(dep_name: str, version_chunks: list[dict]) -> None:
+async def embed_changelog(dep_name: str, version_chunks: list[dict], project_path: str = "") -> None:
     """Embed and upsert changelog chunks into ChromaDB.
 
     Each chunk: {"version": "2.0.0", "content": "..."}
     """
-    collection = get_collection()
+    collection = get_collection(project_path)
 
     for chunk in version_chunks:
         content = chunk["content"]
@@ -64,10 +74,41 @@ async def embed_changelog(dep_name: str, version_chunks: list[dict]) -> None:
             )
 
 
+async def _summarize_changelog(text: str, dep_name: str) -> str:
+    """Summarize oversized changelog text before sending to the analysis LLM.
+
+    Called when combined chunk text exceeds SUMMARIZE_THRESHOLD_CHARS.  Returns
+    a concise plain-text summary focused on breaking changes and deprecations.
+    """
+    instructor_client = get_client()
+    async with get_llm_semaphore():
+        result: ChangelogSummary = await instructor_client.chat.completions.create(
+            model=active_model(),
+            response_model=ChangelogSummary,
+            max_retries=2,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a dependency migration expert. "
+                        "Summarize the following changelog text, keeping only breaking changes, "
+                        "removals, renames, and deprecations. Discard new features and minor fixes."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Summarize this {dep_name} changelog:\n\n{text}",
+                },
+            ],
+        )
+    return result.summary
+
+
 async def query(
     query_text: str,
     dep_name: str,
     n_results: int | None = RAG_N_RESULTS,
+    project_path: str = "",
 ) -> RAGQueryResult:
     """Query changelog embeddings and analyze with LLM.
 
@@ -76,7 +117,7 @@ async def query(
     n_results=None (default) retrieves every stored chunk for dep_name, giving
     the LLM the full changelog context. Pass an int to cap results.
     """
-    collection = get_collection()
+    collection = get_collection(project_path)
     query_embedding = await get_embedding(query_text)
 
     if n_results is None:
@@ -95,6 +136,9 @@ async def query(
         return RAGQueryResult(breaking_changes=[], confidence=0.0, source_chunks=[])
 
     combined_text = "\n\n---\n\n".join(documents)
+
+    if len(combined_text) > SUMMARIZE_THRESHOLD_CHARS:
+        combined_text = await _summarize_changelog(combined_text, dep_name)
 
     instructor_client = get_client()
     async with get_llm_semaphore():

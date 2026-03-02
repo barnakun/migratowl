@@ -104,6 +104,10 @@ class ChangelogAnalysis(BaseModel):
         return result
 
 
+class ChangelogSummary(BaseModel):
+    summary: str = Field(description="Concise summary of breaking changes and deprecations only")
+
+
 class RAGQueryResult(BaseModel):
     breaking_changes: list[BreakingChange] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)

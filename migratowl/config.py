@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     max_concurrent_registry_queries: int = 20
     max_rag_results: int = 20
     max_concurrent_llm_calls: int = 5
+    summarize_threshold: int = 32_000
+    cache_path: str = ".migratowl/cache"
+    changelog_cache_path: str = ".migratowl/changelog-cache"
+    changelog_cache_ttl_minutes: int = 1440
 
     model_config = {"env_prefix": "MIGRATOWL_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

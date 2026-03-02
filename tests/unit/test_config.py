@@ -102,3 +102,12 @@ class TestScalabilitySettings:
         monkeypatch.setenv("MIGRATOWL_MAX_CONCURRENT_LLM_CALLS", "2")
         s = Settings()
         assert s.max_concurrent_llm_calls == 2
+
+    def test_default_summarize_threshold(self) -> None:
+        s = Settings(openai_api_key="test")
+        assert s.summarize_threshold == 32_000
+
+    def test_summarize_threshold_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MIGRATOWL_SUMMARIZE_THRESHOLD", "16000")
+        s = Settings()
+        assert s.summarize_threshold == 16_000

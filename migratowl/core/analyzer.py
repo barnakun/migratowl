@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, Send
 
 from migratowl.config import settings
-from migratowl.core import changelog, code_parser, impact, patcher, rag, registry, scanner
+from migratowl.core import cache, changelog, changelog_cache, code_parser, impact, patcher, rag, registry, scanner
 
 # Import report as a module reference so tests can patch it.
 from migratowl.core import report as report  # noqa: PLW0127
@@ -24,19 +25,55 @@ from migratowl.models.schemas import (
 MAX_RAG_RETRIES = 3
 CONFIDENCE_THRESHOLD = settings.confidence_threshold
 
+# Lazily initialised semaphore that caps the number of deps running through the
+# expensive pipeline (changelog fetch → embed → RAG → impact) concurrently.
+# Cache hits in check_cache_node bypass this entirely.
+_dep_semaphore: asyncio.Semaphore | None = None
+
+
+def get_dep_semaphore() -> asyncio.Semaphore:
+    """Return the module-level semaphore that gates concurrent dep analyses."""
+    global _dep_semaphore
+    if _dep_semaphore is None:
+        _dep_semaphore = asyncio.Semaphore(settings.max_concurrent_deps)
+    return _dep_semaphore
+
 
 # ---------------------------------------------------------------------------
 # Per-dependency worker nodes (DepAnalysisState)
 # ---------------------------------------------------------------------------
 
 
-async def fetch_changelog_node(state: DepAnalysisState) -> Command:
-    """Fetch changelog text for a dependency."""
-    text, warnings = await changelog.fetch_changelog(
-        changelog_url=state["changelog_url"] or None,
-        repository_url=state["repository_url"] or None,
-        dep_name=state["dep_name"],
+async def check_cache_node(state: DepAnalysisState) -> Command:
+    """Return cached impact assessment if available, skipping the full pipeline."""
+    cached = cache.get_cached_assessment(
+        state["project_path"],
+        state["dep_name"],
+        state["current_version"],
+        state["latest_version"],
     )
+    if cached is not None:
+        return Command(goto=END, update={"impact_assessments": [cached]})
+    return Command(goto="fetch_changelog", update={})
+
+
+async def fetch_changelog_node(state: DepAnalysisState) -> Command:
+    """Fetch changelog text for a dependency.
+
+    Gated by get_dep_semaphore() to cap the number of deps running the full
+    pipeline concurrently (default 20). Cache hits never reach this node.
+    """
+    async with get_dep_semaphore():
+        cached = changelog_cache.get_cached_changelog(state["dep_name"])
+        if cached is not None:
+            text, warnings = cached
+        else:
+            text, warnings = await changelog.fetch_changelog(
+                changelog_url=state["changelog_url"] or None,
+                repository_url=state["repository_url"] or None,
+                dep_name=state["dep_name"],
+            )
+            changelog_cache.set_cached_changelog(state["dep_name"], text, warnings)
     update: dict = {"changelog": text}
     if warnings:
         update["warnings"] = warnings
@@ -59,7 +96,7 @@ async def embed_changelog_node(state: DepAnalysisState) -> Command:
                 f"{state['current_version']} and {state['latest_version']}"
             )
 
-    await rag.embed_changelog(dep_name, chunks)
+    await rag.embed_changelog(dep_name, chunks, state["project_path"])
     update: dict = {}
     if warnings:
         update["warnings"] = warnings
@@ -72,7 +109,7 @@ async def rag_analyze_node(state: DepAnalysisState) -> Command:
         f"breaking changes in {state['dep_name']} between {state['current_version']} and {state['latest_version']}"
     )
     try:
-        result = await rag.query(query_text, state["dep_name"])
+        result = await rag.query(query_text, state["dep_name"], project_path=state["project_path"])
     except Exception:
         # LLM validation failures (e.g. small models producing bad JSON) — continue with empty results
         return Command(
@@ -137,6 +174,14 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
     all_warnings = state.get("warnings", []) + node_warnings
     assessment_dict = assessment.model_dump()
     assessment_dict["warnings"] = all_warnings
+
+    cache.set_cached_assessment(
+        state["project_path"],
+        state["dep_name"],
+        state["current_version"],
+        state["latest_version"],
+        assessment_dict,
+    )
 
     return Command(goto=END, update={"impact_assessments": [assessment_dict]})
 
@@ -246,6 +291,7 @@ def _build_dep_worker_compiled() -> Any:
     """Build and compile the per-dependency worker subgraph."""
     builder = StateGraph(DepAnalysisState)
 
+    builder.add_node("check_cache", check_cache_node)
     builder.add_node("fetch_changelog", fetch_changelog_node)
     builder.add_node("embed_changelog", embed_changelog_node)
     builder.add_node("rag_analyze", rag_analyze_node)
@@ -253,7 +299,7 @@ def _build_dep_worker_compiled() -> Any:
     builder.add_node("parse_code", parse_code_node)
     builder.add_node("assess_impact", assess_impact_node)
 
-    builder.set_entry_point("fetch_changelog")
+    builder.set_entry_point("check_cache")
 
     return builder.compile()
 
@@ -262,6 +308,7 @@ def build_dep_worker_graph() -> StateGraph:
     """Build the per-dependency worker StateGraph (not compiled)."""
     builder = StateGraph(DepAnalysisState)
 
+    builder.add_node("check_cache", check_cache_node)
     builder.add_node("fetch_changelog", fetch_changelog_node)
     builder.add_node("embed_changelog", embed_changelog_node)
     builder.add_node("rag_analyze", rag_analyze_node)
@@ -269,7 +316,7 @@ def build_dep_worker_graph() -> StateGraph:
     builder.add_node("parse_code", parse_code_node)
     builder.add_node("assess_impact", assess_impact_node)
 
-    builder.set_entry_point("fetch_changelog")
+    builder.set_entry_point("check_cache")
 
     return builder
 

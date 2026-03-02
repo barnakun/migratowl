@@ -40,6 +40,34 @@ class TestClientCreation:
         assert hasattr(client.chat.completions, "create")
 
 
+class TestOpenAIClientRetries:
+    def test_openai_client_has_retry_budget_for_rate_limits(self) -> None:
+        """AsyncOpenAI clients must be created with max_retries > 2 to handle 429 TPM errors."""
+        with patch("migratowl.core.llm.settings") as mock_settings:
+            mock_settings.use_local_llm = False
+            mock_settings.openai_api_key = "sk-test"
+
+            from migratowl.core.llm import _create_client
+
+            instructor_client = _create_client()
+            # Access the wrapped OpenAI client
+            raw_client = instructor_client.client
+            assert raw_client.max_retries >= 5, (
+                f"Expected max_retries >= 5 for 429 backoff, got {raw_client.max_retries}"
+            )
+
+    def test_raw_openai_client_has_retry_budget(self) -> None:
+        """Raw embedding client must also have elevated max_retries."""
+        with patch("migratowl.core.llm.settings") as mock_settings:
+            mock_settings.use_local_llm = False
+            mock_settings.openai_api_key = "sk-test"
+
+            from migratowl.core.llm import _get_raw_openai_client
+
+            raw_client = _get_raw_openai_client()
+            assert raw_client.max_retries >= 5
+
+
 class TestGetEmbedding:
     @pytest.mark.asyncio
     async def test_get_embedding_returns_list_of_floats(self) -> None:

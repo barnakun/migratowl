@@ -75,6 +75,60 @@ class TestGetCollection:
 
         assert openai_name != ollama_name
 
+    def test_different_projects_use_different_collection_names(self) -> None:
+        """Two different project paths must produce separate ChromaDB collections."""
+        mock_chromadb = MagicMock()
+        mock_client = MagicMock()
+        mock_chromadb.PersistentClient.return_value = mock_client
+        mock_client.get_or_create_collection.return_value = MagicMock()
+
+        from migratowl.core.rag import get_collection
+
+        with (
+            patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
+            patch("migratowl.core.rag.settings") as mock_settings,
+        ):
+            mock_settings.vectorstore_path = "/tmp/vs"
+            mock_settings.use_local_llm = False
+            mock_settings.embedding_model = "text-embedding-3-small"
+            mock_settings.local_embedding_model = "nomic-embed-text"
+
+            get_collection(project_path="/projects/app-a")
+            name_a = mock_client.get_or_create_collection.call_args.args[0]
+            mock_client.reset_mock()
+
+            get_collection(project_path="/projects/app-b")
+            name_b = mock_client.get_or_create_collection.call_args.args[0]
+
+        assert name_a != name_b
+
+    def test_same_project_path_uses_same_collection_name(self) -> None:
+        """The same project path must always resolve to the same collection name."""
+        mock_chromadb = MagicMock()
+        mock_client = MagicMock()
+        mock_chromadb.PersistentClient.return_value = mock_client
+        mock_client.get_or_create_collection.return_value = MagicMock()
+
+        from migratowl.core.rag import get_collection
+
+        with (
+            patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
+            patch("migratowl.core.rag.settings") as mock_settings,
+        ):
+            mock_settings.vectorstore_path = "/tmp/vs"
+            mock_settings.use_local_llm = False
+            mock_settings.embedding_model = "text-embedding-3-small"
+            mock_settings.local_embedding_model = "nomic-embed-text"
+
+            get_collection(project_path="/projects/my-app")
+            name_1 = mock_client.get_or_create_collection.call_args.args[0]
+            mock_client.reset_mock()
+
+            get_collection(project_path="/projects/my-app")
+            name_2 = mock_client.get_or_create_collection.call_args.args[0]
+
+        assert name_1 == name_2
+
     def test_uses_persistent_client_with_settings_path(self) -> None:
         mock_chromadb = MagicMock()
         mock_client = MagicMock()
@@ -387,6 +441,95 @@ class TestQuery:
             query_kwargs = mock_collection.query.call_args.kwargs
             assert query_kwargs["where"] == {"dep_name": "flask"}
             assert query_kwargs["n_results"] == 3
+
+
+class TestSummarization:
+    @pytest.mark.asyncio
+    async def test_small_text_skips_summarization(self) -> None:
+        """Combined text under the threshold must not trigger a summarization call."""
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["short text"]],
+            "distances": [[0.1]],
+            "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
+        }
+        mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.5)
+        mock_instructor_client = MagicMock()
+        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+
+        with (
+            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
+            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
+            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag._summarize_changelog", new_callable=AsyncMock) as mock_summarize,
+        ):
+            from migratowl.core.rag import query
+
+            await query("breaking changes", "flask", n_results=3)
+
+        mock_summarize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_large_text_triggers_summarization(self) -> None:
+        """Combined text over the threshold must be summarized before analysis."""
+        from migratowl.core.rag import SUMMARIZE_THRESHOLD_CHARS
+
+        large_doc = "x" * (SUMMARIZE_THRESHOLD_CHARS + 1)
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[large_doc]],
+            "distances": [[0.1]],
+            "metadatas": [[{"dep_name": "requests", "version": "3.0.0"}]],
+        }
+        mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.8)
+        mock_instructor_client = MagicMock()
+        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+
+        with (
+            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
+            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
+            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag._summarize_changelog", new_callable=AsyncMock, return_value="concise summary") as mock_summarize,
+        ):
+            from migratowl.core.rag import query
+
+            await query("breaking changes", "requests", n_results=3)
+
+        mock_summarize.assert_called_once()
+        call_args = mock_summarize.call_args
+        assert call_args.args[0] == large_doc
+        assert call_args.args[1] == "requests"
+
+    @pytest.mark.asyncio
+    async def test_summarized_text_passed_to_analysis_llm(self) -> None:
+        """When summarization runs, the analysis LLM must receive the summary, not the raw text."""
+        from migratowl.core.rag import SUMMARIZE_THRESHOLD_CHARS
+
+        large_doc = "y" * (SUMMARIZE_THRESHOLD_CHARS + 1)
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [[large_doc]],
+            "distances": [[0.1]],
+            "metadatas": [[{"dep_name": "django", "version": "5.0.0"}]],
+        }
+        mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.7)
+        mock_instructor_client = MagicMock()
+        mock_create = AsyncMock(return_value=mock_analysis)
+        mock_instructor_client.chat.completions.create = mock_create
+
+        with (
+            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
+            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
+            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag._summarize_changelog", new_callable=AsyncMock, return_value="summarized content"),
+        ):
+            from migratowl.core.rag import query
+
+            await query("breaking changes", "django", n_results=3)
+
+        user_message = mock_create.call_args.kwargs["messages"][1]["content"]
+        assert "summarized content" in user_message
+        assert large_doc not in user_message
 
 
 class TestQueryLLMSemaphore:

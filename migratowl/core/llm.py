@@ -36,7 +36,7 @@ def _create_client() -> instructor.AsyncInstructor:
             mode=instructor.Mode.JSON,
         )
     return instructor.from_openai(
-        AsyncOpenAI(api_key=settings.openai_api_key),
+        AsyncOpenAI(api_key=settings.openai_api_key, max_retries=5),
     )
 
 
@@ -58,7 +58,7 @@ def _get_raw_openai_client() -> AsyncOpenAI:
             base_url=settings.ollama_base_url,
             api_key="ollama",
         )
-    return AsyncOpenAI(api_key=settings.openai_api_key)
+    return AsyncOpenAI(api_key=settings.openai_api_key, max_retries=5)
 
 
 async def get_embedding(text: str) -> list[float]:
