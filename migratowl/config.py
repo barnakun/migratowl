@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     cache_path: str = ".migratowl/cache"
     changelog_cache_path: str = ".migratowl/changelog-cache"
     changelog_cache_ttl_minutes: int = 1440
+    http_timeout: float = 30.0
 
     model_config = {"env_prefix": "MIGRATOWL_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

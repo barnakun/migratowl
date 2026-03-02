@@ -72,7 +72,16 @@ def analyze(
     if run_analysis is None:
         run_analysis = _get_run_analysis()
 
-    result = asyncio.run(run_analysis(str(path), fix_mode=fix))
+    async def _run() -> str:
+        from migratowl.core.http import close_http_client
+
+        try:
+            result: str = await run_analysis(str(path), fix_mode=fix)
+            return result
+        finally:
+            await close_http_client()
+
+    result = asyncio.run(_run())
 
     if output:
         Path(output).write_text(result)

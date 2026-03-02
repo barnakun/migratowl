@@ -6,10 +6,10 @@ import asyncio
 import logging
 import re
 
-import httpx
 from packaging.version import InvalidVersion, Version
 
 from migratowl.config import settings
+from migratowl.core.http import get_http_client
 from migratowl.models.schemas import Dependency, Ecosystem, OutdatedDependency, RegistryInfo
 
 logger = logging.getLogger(__name__)
@@ -35,10 +35,10 @@ async def query_registry(name: str, ecosystem: Ecosystem) -> RegistryInfo:
 async def _query_pypi(name: str) -> RegistryInfo:
     """Query PyPI JSON API for package info."""
     url = f"https://pypi.org/pypi/{name}/json"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
+    client = get_http_client()
+    resp = await client.get(url)
+    resp.raise_for_status()
+    data = resp.json()
 
     info = data["info"]
     project_urls = info.get("project_urls") or {}
@@ -55,10 +55,10 @@ async def _query_pypi(name: str) -> RegistryInfo:
 async def _query_npm(name: str) -> RegistryInfo:
     """Query npm registry for package info."""
     url = f"https://registry.npmjs.org/{name}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
+    client = get_http_client()
+    resp = await client.get(url)
+    resp.raise_for_status()
+    data = resp.json()
 
     latest_version = data.get("dist-tags", {}).get("latest", "0.0.0")
     homepage = data.get("homepage")

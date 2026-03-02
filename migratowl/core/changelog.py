@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import TYPE_CHECKING
 
 import html2text as _html2text
-import httpx
 from packaging.version import InvalidVersion, Version
 
 from migratowl.config import settings
+from migratowl.core.http import get_http_client
+
+if TYPE_CHECKING:
+    import httpx
 
 
 async def fetch_changelog(
@@ -55,20 +59,20 @@ async def _fetch_from_url(url: str) -> str:
     for parseable version headers.  Raises ValueError if no version headers are
     found after stripping (triggers the GitHub raw-file fallback).
     """
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        text = response.text
-        if text.lstrip().startswith(("<", "<!DOCTYPE", "<!doctype")):
-            converter = _html2text.HTML2Text()
-            converter.ignore_links = True
-            converter.ignore_images = True
-            converter.body_width = 0
-            stripped = converter.handle(text)
-            if not chunk_changelog_by_version(stripped):
-                raise ValueError(f"HTML response with no parseable version headers: {url}")
-            return stripped
-        return text
+    client = get_http_client()
+    response = await client.get(url)
+    response.raise_for_status()
+    text = response.text
+    if text.lstrip().startswith(("<", "<!DOCTYPE", "<!doctype")):
+        converter = _html2text.HTML2Text()
+        converter.ignore_links = True
+        converter.ignore_images = True
+        converter.body_width = 0
+        stripped = converter.handle(text)
+        if not chunk_changelog_by_version(stripped):
+            raise ValueError(f"HTML response with no parseable version headers: {url}")
+        return stripped
+    return text
 
 
 # Regex to find a GitHub blob URL embedded in stub/redirect files.
@@ -160,38 +164,36 @@ async def _fetch_from_github(repository_url: str) -> str:
     branches = ["main", "master"]
     sem = asyncio.Semaphore(10)
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-        for filenames_group in (_ROOT_FILENAMES, _DOC_FILENAMES):
-            urls = [
-                f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}"
-                for branch in branches
-                for filename in filenames_group
-            ]
+    client = get_http_client()
+    for filenames_group in (_ROOT_FILENAMES, _DOC_FILENAMES):
+        urls = [
+            f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}"
+            for branch in branches
+            for filename in filenames_group
+        ]
 
-            # Fast path: probe all URLs in parallel.
-            result = await _try_urls_concurrently(client, urls, sem)
-            if result is not None:
-                return result
+        # Fast path: probe all URLs in parallel.
+        result = await _try_urls_concurrently(client, urls, sem)
+        if result is not None:
+            return result
 
-            # Slow path: look for stub files that embed a GitHub blob URL.
-            for url in urls:
-                try:
-                    r = await client.get(url)
-                    if r.status_code != 200 or chunk_changelog_by_version(r.text):
-                        continue
-                    m = _GITHUB_BLOB_RE.search(r.text)
-                    if m:
-                        raw_url = (
-                            f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
-                        )
-                        try:
-                            r2 = await client.get(raw_url)
-                            if r2.status_code == 200 and chunk_changelog_by_version(r2.text):
-                                return r2.text
-                        except Exception:
-                            pass
-                except Exception:
+        # Slow path: look for stub files that embed a GitHub blob URL.
+        for url in urls:
+            try:
+                r = await client.get(url)
+                if r.status_code != 200 or chunk_changelog_by_version(r.text):
                     continue
+                m = _GITHUB_BLOB_RE.search(r.text)
+                if m:
+                    raw_url = f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
+                    try:
+                        r2 = await client.get(raw_url)
+                        if r2.status_code == 200 and chunk_changelog_by_version(r2.text):
+                            return r2.text
+                    except Exception:
+                        pass
+            except Exception:
+                continue
 
     raise FileNotFoundError(f"No changelog found for {owner}/{repo}")
 
@@ -228,12 +230,12 @@ async def _fetch_from_github_releases(repository_url: str) -> str:
         headers["Authorization"] = f"Bearer {settings.github_token}"
 
     all_releases: list[dict] = []
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-        while url is not None:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            all_releases.extend(response.json())
-            url = _parse_next_link(response.headers.get("Link"))
+    client = get_http_client()
+    while url is not None:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        all_releases.extend(response.json())
+        url = _parse_next_link(response.headers.get("Link"))
 
     usable = [r for r in all_releases if not r.get("draft") and not r.get("prerelease")]
     if not usable:

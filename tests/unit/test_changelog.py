@@ -245,9 +245,10 @@ class TestFetchFromUrl:
         html_content = "<!DOCTYPE html><html><body><h1>Flask Changelog</h1></body></html>"
         mock_response = type("R", (), {"text": html_content, "raise_for_status": lambda self: None})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_client
             with pytest.raises(ValueError, match="HTML"):
                 await _fetch_from_url("https://example.com/changes/")
 
@@ -267,9 +268,10 @@ class TestFetchFromUrl:
 </body></html>"""
         mock_response = type("R", (), {"text": html_content, "raise_for_status": lambda self: None})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_url("https://example.com/changes/")
 
         assert "2.0.0" in result
@@ -283,9 +285,10 @@ class TestFetchFromUrl:
         rst_content = "Version 3.0\n-----------\n\n- Some change.\n"
         mock_response = type("R", (), {"text": rst_content, "raise_for_status": lambda self: None})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_url("https://example.com/CHANGES.rst")
 
         assert result == rst_content
@@ -304,9 +307,10 @@ class TestFetchFromGithub:
             status = 200 if url.endswith("CHANGES.rst") else 404
             return type("R", (), {"status_code": status, "text": "Version 1.0\n---\n- x"})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_github("https://github.com/pallets/flask/")
 
         assert any("CHANGES.rst" in url for url in fetched_urls)
@@ -331,9 +335,10 @@ class TestFetchFromGithub:
                 return type("R", (), {"status_code": 200, "text": "## 1.0.0\n- Change"})()
             return type("R", (), {"status_code": 404, "text": ""})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_github("https://github.com/owner/repo")
 
         assert any("/master/" in url for url in fetched_urls)
@@ -347,9 +352,10 @@ class TestFetchFromGithub:
         async def fake_get(url: str) -> object:
             return type("R", (), {"status_code": 404, "text": ""})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             with pytest.raises(FileNotFoundError):
                 await _fetch_from_github("https://github.com/owner/repo")
 
@@ -368,9 +374,10 @@ class TestFetchFromGithub:
                 return type("R", (), {"status_code": 200, "text": "## 1.0.0\n- Change.\n"})()
             return type("R", (), {"status_code": 404, "text": ""})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_github("https://github.com/owner/repo")
 
         assert any("docs/changes.rst" in url for url in fetched_urls)
@@ -401,9 +408,10 @@ class TestFetchFromGithub:
                 return type("R", (), {"status_code": 200, "text": real_content})()
             return type("R", (), {"status_code": 404, "text": ""})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_github("https://github.com/owner/repo")
 
         assert any("doc/en/changelog.rst" in url for url in fetched_urls)
@@ -423,9 +431,10 @@ class TestFetchFromGithub:
                 return type("R", (), {"status_code": 200, "text": "## 0.13.0\n- Initial."})()
             return type("R", (), {"status_code": 404, "text": ""})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_github("https://github.com/Goldziher/tree-sitter-language-pack#readme")
 
         assert all("#" not in u for u in fetched_urls), "Fragment leaked into raw URL"
@@ -446,9 +455,10 @@ class TestFetchFromGithub:
                 return type("R", (), {"status_code": 200, "text": real_content})()
             return type("R", (), {"status_code": 404, "text": ""})()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_github("https://github.com/owner/repo")
 
         assert "Fixed things" in result
@@ -585,9 +595,10 @@ class TestFetchFromGithubReleases:
             {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_github_releases("https://github.com/owner/repo")
 
         chunks = chunk_changelog_by_version(result)
@@ -613,9 +624,10 @@ class TestFetchFromGithubReleases:
             {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_client
             result = await _fetch_from_github_releases("https://github.com/owner/repo")
 
         assert "Beta stuff" not in result
@@ -634,9 +646,10 @@ class TestFetchFromGithubReleases:
             {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
         )()
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_client
             with pytest.raises(FileNotFoundError):
                 await _fetch_from_github_releases("https://github.com/owner/repo")
 
@@ -660,13 +673,14 @@ class TestFetchFromGithubReleases:
             captured_headers.append(kwargs.get("headers", {}))
             return mock_response
 
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=fake_get)
+
         with (
-            patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls,
+            patch("migratowl.core.changelog.get_http_client", return_value=mock_client),
             patch("migratowl.core.changelog.settings") as mock_settings,
         ):
             mock_settings.github_token = "ghp_testtoken123"
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
-            mock_client.get = AsyncMock(side_effect=fake_get)
             await _fetch_from_github_releases("https://github.com/owner/repo")
 
         assert any("Authorization" in h for h in captured_headers)
@@ -692,9 +706,10 @@ class TestFetchFromGithubReleases:
             captured_urls.append(url)
             return mock_response
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             await _fetch_from_github_releases("https://github.com/langchain-ai/langsmith-sdk")
 
         assert any("api.github.com/repos/langchain-ai/langsmith-sdk/releases" in u for u in captured_urls)
@@ -720,9 +735,10 @@ class TestFetchFromGithubReleases:
             captured_urls.append(url)
             return mock_response
 
-        with patch("migratowl.core.changelog.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value.__aenter__.return_value
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
             mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
             await _fetch_from_github_releases("https://github.com/Goldziher/tree-sitter-language-pack#readme")
 
         assert len(captured_urls) == 1
@@ -965,11 +981,9 @@ class TestGitHubReleasesPagination:
 
         mock_client = AsyncMock()
         mock_client.get.side_effect = mock_get
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("migratowl.core.changelog.get_http_client", return_value=mock_client),
             patch("migratowl.core.changelog.settings") as mock_settings,
         ):
             mock_settings.github_token = ""
@@ -997,11 +1011,9 @@ class TestGitHubReleasesPagination:
 
         mock_client = AsyncMock()
         mock_client.get.side_effect = mock_get
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("migratowl.core.changelog.get_http_client", return_value=mock_client),
             patch("migratowl.core.changelog.settings") as mock_settings,
         ):
             mock_settings.github_token = ""

@@ -71,12 +71,10 @@ class TestQueryRegistry:
 
 class TestQueryPyPI:
     async def test_returns_registry_info(self) -> None:
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=_mock_pypi_response())
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("migratowl.core.registry.get_http_client", return_value=mock_client):
             result = await _query_pypi("requests")
 
         assert isinstance(result, RegistryInfo)
@@ -88,12 +86,10 @@ class TestQueryPyPI:
     async def test_handles_missing_project_urls(self) -> None:
         data = {"info": {"name": "simple", "version": "1.0.0", "home_page": None, "project_urls": None}}
         resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://pypi.org"))
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("migratowl.core.registry.get_http_client", return_value=mock_client):
             result = await _query_pypi("simple")
 
         assert result.repository_url is None
@@ -105,12 +101,10 @@ class TestQueryPyPI:
 
 class TestQueryNpm:
     async def test_returns_registry_info(self) -> None:
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=_mock_npm_response())
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("migratowl.core.registry.get_http_client", return_value=mock_client):
             result = await _query_npm("express")
 
         assert isinstance(result, RegistryInfo)
@@ -122,12 +116,10 @@ class TestQueryNpm:
     async def test_handles_missing_repo(self) -> None:
         data = {"name": "minimal", "dist-tags": {"latest": "1.0.0"}}
         resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://registry.npmjs.org"))
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("migratowl.core.registry.get_http_client", return_value=mock_client):
             result = await _query_npm("minimal")
 
         assert result.repository_url is None

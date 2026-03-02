@@ -1,11 +1,22 @@
 """MCP server for MigratOwl — exposes analysis tools via FastMCP."""
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastmcp import FastMCP
 
-mcp = FastMCP("migratowl")
+
+@asynccontextmanager
+async def _lifespan(app: Any) -> AsyncIterator[None]:
+    yield
+    from migratowl.core.http import close_http_client
+
+    await close_http_client()
+
+
+mcp = FastMCP("migratowl", lifespan=_lifespan)
 
 
 @mcp.tool()
