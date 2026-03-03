@@ -56,6 +56,7 @@ def _make_dep_state(**overrides) -> dict:
         "retry_count": 0,
         "code_usages": [],
         "warnings": [],
+        "node_errors": [],
     }
     state.update(overrides)
     return state
@@ -140,6 +141,9 @@ class TestFanOutDeps:
         assert result[1].node == "analyze_dep"
         assert result[0].arg["dep_name"] == "requests"
         assert result[1].arg["dep_name"] == "flask"
+        # node_errors must be initialised in the Send payload
+        assert result[0].arg["node_errors"] == []
+        assert result[1].arg["node_errors"] == []
 
     def test_fan_out_deps_passes_changelog_urls(self) -> None:
         from migratowl.core.analyzer import fan_out_deps
@@ -410,6 +414,110 @@ class TestFetchChangelogNode:
 
 
 # ---------------------------------------------------------------------------
+# fetch_changelog_node — error handling
+# ---------------------------------------------------------------------------
+
+
+class TestFetchChangelogNodeErrorHandling:
+    @pytest.mark.asyncio
+    async def test_fetch_failure_returns_degraded_assessment_and_end(self) -> None:
+        """When fetch_changelog raises, node returns degraded assessment + routes to END."""
+        from langgraph.graph import END
+
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("HTTP 404"),
+            ),
+        ):
+            state = _make_dep_state()
+            result = await fetch_changelog_node(state)
+
+        assert isinstance(result, Command)
+        assert result.goto == END
+        assessment = result.update["impact_assessments"][0]
+        assert "HTTP 404" in assessment["errors"][0]
+
+    @pytest.mark.asyncio
+    async def test_cache_read_failure_nonfatal_continues(self) -> None:
+        """Cache read failure in fetch_changelog_node is non-fatal — fetch proceeds."""
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        with (
+            patch(
+                "migratowl.core.analyzer.changelog_cache.get_cached_changelog",
+                side_effect=RuntimeError("cache broken"),
+            ),
+            patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                return_value=("changelog text", []),
+            ),
+        ):
+            state = _make_dep_state()
+            result = await fetch_changelog_node(state)
+
+        assert result.goto == "embed_changelog"
+        assert result.update["changelog"] == "changelog text"
+
+    @pytest.mark.asyncio
+    async def test_cache_write_failure_nonfatal_continues(self) -> None:
+        """Cache write failure in fetch_changelog_node is non-fatal — continues to embed."""
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch(
+                "migratowl.core.analyzer.changelog_cache.set_cached_changelog",
+                side_effect=RuntimeError("write error"),
+            ),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                return_value=("changelog text", []),
+            ),
+        ):
+            state = _make_dep_state()
+            result = await fetch_changelog_node(state)
+
+        assert result.goto == "embed_changelog"
+        assert result.update["changelog"] == "changelog text"
+
+
+# ---------------------------------------------------------------------------
+# embed_changelog_node — error handling
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedChangelogNodeErrorHandling:
+    @pytest.mark.asyncio
+    async def test_embed_failure_returns_degraded_assessment_and_end(self) -> None:
+        """When embed_changelog raises, node returns degraded assessment + routes to END."""
+        from langgraph.graph import END
+
+        from migratowl.core.analyzer import embed_changelog_node
+
+        with (
+            patch(
+                "migratowl.core.analyzer.changelog.chunk_changelog_by_version",
+                side_effect=RuntimeError("ChromaDB down"),
+            ),
+        ):
+            state = _make_dep_state(changelog="some text")
+            result = await embed_changelog_node(state)
+
+        assert isinstance(result, Command)
+        assert result.goto == END
+        assessment = result.update["impact_assessments"][0]
+        assert "ChromaDB down" in assessment["errors"][0]
+
+
+# ---------------------------------------------------------------------------
 # embed_changelog_node — version-range pre-filtering
 # ---------------------------------------------------------------------------
 
@@ -589,6 +697,149 @@ class TestWarningPropagation:
 
 
 # ---------------------------------------------------------------------------
+# rag_analyze_node — error handling (warning instead of silent)
+# ---------------------------------------------------------------------------
+
+
+class TestRagAnalyzeNodeErrorHandling:
+    @pytest.mark.asyncio
+    async def test_rag_exception_continues_with_error(self) -> None:
+        """RAG exception must continue to parse_code with an error recorded."""
+        from migratowl.core.analyzer import rag_analyze_node
+
+        with patch(
+            "migratowl.core.analyzer.rag.query",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("LLM validation failed"),
+        ):
+            state = _make_dep_state()
+            result = await rag_analyze_node(state)
+
+        assert result.goto == "parse_code"
+        assert result.update["rag_results"] == []
+        assert result.update["rag_confidence"] == 0.0
+        assert "node_errors" in result.update
+        assert any("LLM validation failed" in e or "RAG" in e for e in result.update["node_errors"])
+
+
+# ---------------------------------------------------------------------------
+# parse_code_node — error handling
+# ---------------------------------------------------------------------------
+
+
+class TestParseCodeNodeErrorHandling:
+    @pytest.mark.asyncio
+    async def test_parse_failure_continues_with_empty_usages_and_error(self) -> None:
+        """parse_code failure must continue to assess_impact with empty usages + error."""
+        from migratowl.core.analyzer import parse_code_node
+
+        with patch(
+            "migratowl.core.analyzer.code_parser.find_usages",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("tree-sitter crash"),
+        ):
+            state = _make_dep_state()
+            result = await parse_code_node(state)
+
+        assert result.goto == "assess_impact"
+        assert result.update["code_usages"] == []
+        assert "node_errors" in result.update
+        assert any("tree-sitter crash" in e or "parse" in e.lower() for e in result.update["node_errors"])
+
+
+# ---------------------------------------------------------------------------
+# assess_impact_node — error handling
+# ---------------------------------------------------------------------------
+
+
+class TestAssessImpactNodeErrorHandling:
+    @pytest.mark.asyncio
+    async def test_assess_impact_failure_returns_degraded_assessment(self) -> None:
+        """assess_impact failure must return degraded assessment + END."""
+        from langgraph.graph import END
+
+        from migratowl.core.analyzer import assess_impact_node
+
+        with patch(
+            "migratowl.core.analyzer.impact.assess_impact",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("LLM down"),
+        ):
+            state = _make_dep_state(rag_results=[], code_usages=[])
+            result = await assess_impact_node(state)
+
+        assert result.goto == END
+        assessment = result.update["impact_assessments"][0]
+        assert "LLM down" in assessment["errors"][0]
+
+    @pytest.mark.asyncio
+    async def test_cache_write_failure_nonfatal(self) -> None:
+        """Cache write failure in assess_impact_node is non-fatal."""
+        from migratowl.core.analyzer import assess_impact_node
+
+        mock_assessment = ImpactAssessment(
+            dep_name="requests",
+            versions={"current": "2.28.0", "latest": "2.31.0"},
+            impacts=[],
+            summary="No impact",
+            overall_severity=Severity.INFO,
+        )
+
+        with (
+            patch(
+                "migratowl.core.analyzer.impact.assess_impact",
+                new_callable=AsyncMock,
+                return_value=mock_assessment,
+            ),
+            patch(
+                "migratowl.core.analyzer.cache.set_cached_assessment",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("disk full"),
+            ),
+        ):
+            state = _make_dep_state(rag_results=[], code_usages=[])
+            result = await assess_impact_node(state)
+
+        # Should still succeed despite cache write failure
+        from langgraph.graph import END
+
+        assert result.goto == END
+        assert len(result.update["impact_assessments"]) == 1
+        assert result.update["impact_assessments"][0]["dep_name"] == "requests"
+
+    @pytest.mark.asyncio
+    async def test_state_errors_propagated_to_assessment(self) -> None:
+        """Errors accumulated in state (e.g. from RAG failure) must appear in the assessment."""
+        from migratowl.core.analyzer import assess_impact_node
+
+        mock_assessment = ImpactAssessment(
+            dep_name="requests",
+            versions={"current": "2.28.0", "latest": "2.31.0"},
+            impacts=[],
+            summary="No impact",
+            overall_severity=Severity.INFO,
+        )
+
+        with (
+            patch(
+                "migratowl.core.analyzer.impact.assess_impact",
+                new_callable=AsyncMock,
+                return_value=mock_assessment,
+            ),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
+        ):
+            state = _make_dep_state(
+                rag_results=[],
+                code_usages=[],
+                node_errors=["RAG analysis failed for requests: AuthenticationError (HTTP 401)"],
+            )
+            result = await assess_impact_node(state)
+
+        assessment = result.update["impact_assessments"][0]
+        assert "RAG analysis failed" in assessment["errors"][0]
+
+
+# ---------------------------------------------------------------------------
 # scan_dependencies_node — URL inclusion
 # ---------------------------------------------------------------------------
 
@@ -683,9 +934,10 @@ class TestBuildAnalysisGraph:
 # ---------------------------------------------------------------------------
 
 
+@patch("migratowl.core.analyzer._preflight_api_check", new_callable=AsyncMock)
 class TestAnalyze:
     @pytest.mark.asyncio
-    async def test_analyze_returns_json_string(self) -> None:
+    async def test_analyze_returns_json_string(self, _mock_preflight: AsyncMock) -> None:
         from migratowl.core.analyzer import analyze
 
         mock_deps = [
@@ -773,7 +1025,7 @@ class TestAnalyze:
         assert parsed["project_path"] == "/tmp/myproject"
 
     @pytest.mark.asyncio
-    async def test_analyze_populates_assessments_in_report(self) -> None:
+    async def test_analyze_populates_assessments_in_report(self, _mock_preflight: AsyncMock) -> None:
         """assess_impact_node must write impact_assessments back to the parent state."""
         from migratowl.core.analyzer import analyze
 
@@ -832,7 +1084,7 @@ class TestAnalyze:
         assert parsed["assessments"][0]["dep_name"] == "requests"
 
     @pytest.mark.asyncio
-    async def test_analyze_with_multiple_deps_does_not_raise_concurrent_update_error(self) -> None:
+    async def test_analyze_with_multiple_deps_does_not_raise_concurrent_update_error(self, _mock_preflight: AsyncMock) -> None:
         """Parallel fan-out with 2+ deps must not raise InvalidUpdateError on project_path."""
         from migratowl.core.analyzer import analyze
 
@@ -911,6 +1163,46 @@ class TestAnalyze:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed["project_path"] == "/tmp/myproject"
+
+
+# ---------------------------------------------------------------------------
+# generate_report_node — errors round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateReportNodeErrorsRoundTrip:
+    @pytest.mark.asyncio
+    async def test_assessment_with_errors_survives_model_validate(self) -> None:
+        """Assessment dicts with errors field must survive model_validate in generate_report_node."""
+        from migratowl.core.analyzer import generate_report_node
+
+        assessment_dict = ImpactAssessment(
+            dep_name="bcryptjs",
+            versions={"current": "2.0.0", "latest": "3.0.0"},
+            impacts=[],
+            summary="Analysis incomplete for bcryptjs",
+            overall_severity=Severity.WARNING,
+            warnings=["No changelog found"],
+            errors=["Changelog fetch failed for bcryptjs: 404 Not Found"],
+        ).model_dump()
+
+        state = _make_parent_state(
+            impact_assessments=[assessment_dict],
+            patches=[],
+            errors=["Registry error for some-pkg"],
+        )
+
+        with (
+            patch("migratowl.core.analyzer.report.build_report") as mock_build,
+            patch("migratowl.core.analyzer.report.export_json", return_value="{}"),
+        ):
+            await generate_report_node(state)
+
+        # build_report must receive ImpactAssessment objects with errors preserved
+        called_assessments = mock_build.call_args.kwargs["assessments"]
+        assert len(called_assessments) == 1
+        assert called_assessments[0].errors == ["Changelog fetch failed for bcryptjs: 404 Not Found"]
+        assert called_assessments[0].warnings == ["No changelog found"]
 
 
 # ---------------------------------------------------------------------------
@@ -1012,6 +1304,59 @@ class TestCheckCacheNode:
         assert isinstance(result, Command)
         assert result.goto == "fetch_changelog"
         assert result.update == {}
+
+
+# ---------------------------------------------------------------------------
+# _make_degraded_assessment helper
+# ---------------------------------------------------------------------------
+
+
+class TestMakeDegradedAssessment:
+    def test_produces_correct_structure(self) -> None:
+        from migratowl.core.analyzer import _make_degraded_assessment
+
+        state = _make_dep_state(warnings=["some prior warning"])
+        result = _make_degraded_assessment(state, "Something went wrong")
+
+        assert result["dep_name"] == "requests"
+        assert result["versions"] == {"current": "2.28.0", "latest": "2.31.0"}
+        assert result["impacts"] == []
+        assert "incomplete" in result["summary"].lower() or "requests" in result["summary"]
+        assert result["overall_severity"] == "warning"
+        assert "some prior warning" in result["warnings"]
+        assert "Something went wrong" in result["errors"]
+
+    def test_produces_valid_impact_assessment(self) -> None:
+        from migratowl.core.analyzer import _make_degraded_assessment
+
+        state = _make_dep_state()
+        result = _make_degraded_assessment(state, "test error")
+        # Must be deserializable back into ImpactAssessment
+        ia = ImpactAssessment.model_validate(result)
+        assert ia.dep_name == "requests"
+        assert ia.errors == ["test error"]
+
+
+# ---------------------------------------------------------------------------
+# check_cache_node — cache read failure
+# ---------------------------------------------------------------------------
+
+
+class TestCheckCacheNodeErrorHandling:
+    @pytest.mark.asyncio
+    async def test_cache_read_failure_routes_to_fetch_changelog(self) -> None:
+        """Cache read failure must not crash — route to fetch_changelog."""
+        from migratowl.core.analyzer import check_cache_node
+
+        with patch(
+            "migratowl.core.analyzer.cache.get_cached_assessment",
+            side_effect=RuntimeError("disk error"),
+        ):
+            state = _make_dep_state()
+            result = await check_cache_node(state)
+
+        assert isinstance(result, Command)
+        assert result.goto == "fetch_changelog"
 
 
 # ---------------------------------------------------------------------------
@@ -1119,3 +1464,252 @@ class TestDepSemaphore:
 
         assert peak <= max_concurrent, f"Expected peak ≤ {max_concurrent}, got {peak}"
         analyzer_module._dep_semaphore = None
+
+
+# ---------------------------------------------------------------------------
+# _clean_error_message
+# ---------------------------------------------------------------------------
+
+
+class TestCleanErrorMessage:
+    def test_simple_exception_returns_short_message(self) -> None:
+        from migratowl.core.analyzer import _clean_error_message
+
+        exc = RuntimeError("connection refused")
+        result = _clean_error_message(exc)
+        assert result == "connection refused"
+
+    def test_strips_raw_api_error_dict(self) -> None:
+        """OpenAI errors often repr as a dict with nested 'error' key.
+        _clean_error_message should extract just the human-readable part."""
+        from migratowl.core.analyzer import _clean_error_message
+
+        # Simulate an OpenAI-style error with a long repr
+        exc = Exception(
+            "Error code: 401 - {'error': {'message': 'Incorrect API key provided: sk-proj-***abc.', "
+            "'type': 'invalid_request_error', 'param': None, 'code': 'invalid_api_key'}}"
+        )
+        result = _clean_error_message(exc)
+        # Should NOT contain the raw dict or API key fragment
+        assert "sk-proj-" not in result
+        assert "{'error'" not in result
+        # Should contain the useful info
+        assert "401" in result
+
+    def test_httpx_status_error_cleaned(self) -> None:
+        """httpx HTTPStatusError includes full URL — extract status + short URL."""
+        from migratowl.core.analyzer import _clean_error_message
+
+        # httpx.HTTPStatusError str() looks like:
+        # "Client error '404 Not Found' for url 'https://raw.githubusercontent.com/...long...'"
+        exc = Exception(
+            "Client error '404 Not Found' for url "
+            "'https://raw.githubusercontent.com/user/repo/main/CHANGELOG.md'"
+        )
+        result = _clean_error_message(exc)
+        assert "404 Not Found" in result
+        # Should not include the full raw URL
+        assert len(result) <= 200
+
+    def test_pydantic_validation_error_cleaned(self) -> None:
+        """Pydantic ValidationError is multi-line and verbose — extract count + model."""
+        from migratowl.core.analyzer import _clean_error_message
+
+        # Simulate pydantic.ValidationError str() output
+        exc = Exception(
+            "3 validation errors for RAGQueryResult\n"
+            "breaking_changes -> 0 -> description\n"
+            "  field required (type=value_error.missing)\n"
+            "breaking_changes -> 1 -> severity\n"
+            "  field required (type=value_error.missing)\n"
+            "confidence\n"
+            "  field required (type=value_error.missing)"
+        )
+        result = _clean_error_message(exc)
+        assert "validation error" in result.lower()
+        # Should be concise, not multi-line
+        assert "\n" not in result
+
+    def test_long_message_truncated(self) -> None:
+        from migratowl.core.analyzer import _clean_error_message
+
+        exc = RuntimeError("x" * 500)
+        result = _clean_error_message(exc)
+        assert len(result) <= 200
+
+
+# ---------------------------------------------------------------------------
+# Logging verbosity — tracebacks at DEBUG only
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingVerbosity:
+    @pytest.mark.asyncio
+    async def test_fetch_failure_no_traceback_at_warning_level(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Failed nodes should log at WARNING without exc_info (no traceback).
+        Full tracebacks should only appear at DEBUG level."""
+        import logging
+
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("HTTP 404"),
+            ),
+            caplog.at_level(logging.WARNING, logger="migratowl.core.analyzer"),
+        ):
+            await fetch_changelog_node(_make_dep_state())
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        # Warning records should NOT have exc_info (no traceback)
+        for record in warning_records:
+            assert record.exc_info is None or record.exc_info[0] is None, (
+                "WARNING log should not include traceback (exc_info)"
+            )
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_traceback_at_debug_level(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Full traceback should be available at DEBUG level."""
+        import logging
+
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("HTTP 404"),
+            ),
+            caplog.at_level(logging.DEBUG, logger="migratowl.core.analyzer"),
+        ):
+            await fetch_changelog_node(_make_dep_state())
+
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any(r.exc_info is not None and r.exc_info[0] is not None for r in debug_records), (
+            "DEBUG log should include traceback (exc_info)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_error_messages_in_assessment_are_clean(self) -> None:
+        """Error messages stored in degraded assessments should be concise, not raw dicts."""
+        from langgraph.graph import END
+
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        api_error = Exception(
+            "Error code: 401 - {'error': {'message': 'Incorrect API key', "
+            "'type': 'invalid_request_error', 'param': None, 'code': 'invalid_api_key'}}"
+        )
+
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+        ):
+            result = await fetch_changelog_node(_make_dep_state())
+
+        assert result.goto == END
+        error_msg = result.update["impact_assessments"][0]["errors"][0]
+        assert "{'error'" not in error_msg
+        assert len(error_msg) <= 200
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight API check
+# ---------------------------------------------------------------------------
+
+
+class TestPreflightCheck:
+    @pytest.mark.asyncio
+    async def test_preflight_success_continues_analysis(self) -> None:
+        """When the pre-flight check passes, analysis proceeds normally."""
+        from migratowl.core.analyzer import _preflight_api_check
+
+        with patch(
+            "migratowl.core.analyzer.llm.get_embedding",
+            new_callable=AsyncMock,
+            return_value=[0.1] * 10,
+        ):
+            # Should not raise
+            await _preflight_api_check()
+
+    @pytest.mark.asyncio
+    async def test_preflight_auth_error_raises_with_clear_message(self) -> None:
+        """When the API key is invalid, pre-flight raises with a user-friendly message."""
+        from openai import AuthenticationError
+
+        from migratowl.core.analyzer import _preflight_api_check
+
+        auth_error = AuthenticationError(
+            message="Incorrect API key",
+            response=AsyncMock(status_code=401),
+            body={"error": {"message": "Incorrect API key", "code": "invalid_api_key"}},
+        )
+
+        with (
+            patch(
+                "migratowl.core.analyzer.llm.get_embedding",
+                new_callable=AsyncMock,
+                side_effect=auth_error,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await _preflight_api_check()
+
+        assert exc_info.value.code == 1
+
+    @pytest.mark.asyncio
+    async def test_preflight_connection_error_raises_with_clear_message(self) -> None:
+        """When the API is unreachable, pre-flight raises with a user-friendly message."""
+        from openai import APIConnectionError
+
+        from migratowl.core.analyzer import _preflight_api_check
+
+        with (
+            patch(
+                "migratowl.core.analyzer.llm.get_embedding",
+                new_callable=AsyncMock,
+                side_effect=APIConnectionError(request=AsyncMock()),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await _preflight_api_check()
+
+        assert exc_info.value.code == 1
+
+    @pytest.mark.asyncio
+    async def test_preflight_transient_error_does_not_block(self) -> None:
+        """Transient errors (rate limit, 500) should NOT block analysis."""
+        from migratowl.core.analyzer import _preflight_api_check
+
+        with patch(
+            "migratowl.core.analyzer.llm.get_embedding",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("temporary glitch"),
+        ):
+            # Should not raise — transient errors are not fatal
+            await _preflight_api_check()
+
+    @pytest.mark.asyncio
+    async def test_analyze_calls_preflight(self) -> None:
+        """analyze() must call _preflight_api_check before running the graph."""
+        from migratowl.core.analyzer import analyze
+
+        with (
+            patch(
+                "migratowl.core.analyzer._preflight_api_check",
+                new_callable=AsyncMock,
+                side_effect=SystemExit(1),
+            ) as mock_preflight,
+            pytest.raises(SystemExit),
+        ):
+            await analyze("/tmp/myproject")
+
+        mock_preflight.assert_called_once()

@@ -274,6 +274,45 @@ class TestChangelogAnalysisRobustness:
         assert isinstance(ca.new_features[0], str)
 
 
+class TestErrorsFeature:
+    def test_impact_assessment_has_errors_field(self) -> None:
+        from migratowl.models.schemas import ImpactAssessment, Severity
+
+        ia = ImpactAssessment(
+            dep_name="requests",
+            versions={"current": "2.28.0", "latest": "2.31.0"},
+            impacts=[],
+            summary="No breaking changes",
+            overall_severity=Severity.INFO,
+        )
+        assert hasattr(ia, "errors")
+        assert ia.errors == []
+
+    def test_impact_assessment_errors_can_be_populated(self) -> None:
+        from migratowl.models.schemas import ImpactAssessment, Severity
+
+        ia = ImpactAssessment(
+            dep_name="requests",
+            versions={},
+            impacts=[],
+            summary="",
+            overall_severity=Severity.INFO,
+            errors=["Changelog fetch failed", "RAG analysis failed"],
+        )
+        assert ia.errors == ["Changelog fetch failed", "RAG analysis failed"]
+
+    def test_dep_analysis_state_has_node_errors_field_with_add_reducer(self) -> None:
+        import operator
+        from typing import get_type_hints
+
+        from migratowl.models.schemas import DepAnalysisState
+
+        hints = get_type_hints(DepAnalysisState, include_extras=True)
+        assert "node_errors" in hints
+        meta = hints["node_errors"].__metadata__
+        assert operator.add in meta
+
+
 class TestWarningsFeature:
     def test_impact_assessment_has_warnings_field(self) -> None:
         from migratowl.models.schemas import ImpactAssessment, Severity

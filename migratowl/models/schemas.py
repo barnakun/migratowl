@@ -129,6 +129,7 @@ class ImpactAssessment(BaseModel):
     summary: str
     overall_severity: Severity
     warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class PatchSuggestion(BaseModel):
@@ -193,3 +194,4 @@ class DepAnalysisState(TypedDict):
     code_usages: list[dict]
     impact_assessments: list[dict]
     warnings: Annotated[list[str], operator.add]
+    node_errors: Annotated[list[str], operator.add]

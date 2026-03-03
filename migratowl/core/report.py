@@ -81,6 +81,15 @@ def render_report(report: AnalysisReport, console: Console | None = None) -> Non
 
         console.print(dep_table)
 
+    # Per-dependency errors
+    dep_error_lines: list[str] = []
+    for assessment in report.assessments:
+        if assessment.errors:
+            for e in assessment.errors:
+                dep_error_lines.append(f"- [{assessment.dep_name}] {e}")
+    if dep_error_lines:
+        console.print(Panel("\n".join(dep_error_lines), title="Dependency Errors"))
+
     # Errors
     if report.errors:
         console.print(Panel("\n".join(f"- {e}" for e in report.errors), title="Errors"))
@@ -141,6 +150,12 @@ def export_markdown(report: AnalysisReport) -> str:
             lines.append("**Diagnostics:**")
             for w in assessment.warnings:
                 lines.append(f"- {w}")
+            lines.append("")
+
+        if assessment.errors:
+            lines.append("**Errors:**")
+            for e in assessment.errors:
+                lines.append(f"- {e}")
             lines.append("")
 
     if report.errors:

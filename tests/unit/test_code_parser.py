@@ -324,8 +324,8 @@ class TestLoggingAndValidation:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_find_usages_logs_debug_on_failure(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        """find_usages emits a DEBUG log when a file parse raises."""
+    async def test_find_usages_logs_warning_on_failure(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """find_usages emits a WARNING log when a file parse raises."""
         import logging
 
         proj = tmp_path / "proj"
@@ -336,10 +336,11 @@ class TestLoggingAndValidation:
             "migratowl.core.code_parser.parse_file",
             side_effect=RuntimeError("parse error"),
         ):
-            with caplog.at_level(logging.DEBUG, logger="migratowl.core.code_parser"):
+            with caplog.at_level(logging.WARNING, logger="migratowl.core.code_parser"):
                 await find_usages(proj, "requests")
 
-        assert any("parse error" in r.message or "Failed to parse" in r.message for r in caplog.records)
+        warning_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("parse error" in r.message or "Failed to parse" in r.message for r in warning_records)
 
     @pytest.mark.asyncio
     async def test_find_usages_continues_after_failure(self, tmp_path: Path) -> None:

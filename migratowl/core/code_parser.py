@@ -275,7 +275,7 @@ async def find_usages(project_path: str | Path, dep_name: str) -> list[CodeUsage
                 file_usages = await parse_file(file_path, language)
                 all_usages.extend(file_usages)
             except Exception as exc:  # noqa: BLE001
-                logger.debug("Failed to parse %s: %s", file_path, exc, exc_info=True)
+                logger.warning("Failed to parse %s: %s", file_path, exc, exc_info=True)
                 continue
 
     return _filter_usages_for_dep(all_usages, dep_name)

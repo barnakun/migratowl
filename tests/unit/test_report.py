@@ -181,6 +181,77 @@ class TestWarningsInReport:
         assert "Diagnostics" not in md or "requests" in md  # No false warnings
 
 
+class TestErrorsInReport:
+    def test_export_markdown_renders_per_assessment_errors(self) -> None:
+        """Errors in ImpactAssessment must appear in the Markdown report."""
+        assessment = ImpactAssessment(
+            dep_name="bcryptjs",
+            versions={"current": "2.0.0", "latest": "3.0.0"},
+            impacts=[],
+            summary="Analysis incomplete for bcryptjs",
+            overall_severity=Severity.WARNING,
+            warnings=["No usages found"],
+            errors=["Changelog fetch failed for bcryptjs: 404 Not Found"],
+        )
+        report = build_report(
+            project_path="/home/user/project",
+            assessments=[assessment],
+            patches=[],
+            errors=[],
+        )
+
+        md = export_markdown(report)
+
+        assert "bcryptjs" in md
+        assert "Changelog fetch failed for bcryptjs: 404 Not Found" in md
+        assert "**Errors:**" in md
+
+    def test_export_markdown_no_errors_section_when_empty(self) -> None:
+        """When an assessment has no errors, no errors section is rendered."""
+        assessment = _make_assessment("requests", Severity.INFO)
+        report = build_report(
+            project_path="/home/user/project",
+            assessments=[assessment],
+            patches=[],
+            errors=[],
+        )
+
+        md = export_markdown(report)
+
+        # Should NOT have per-assessment Errors section
+        assert "**Errors:**" not in md
+
+    def test_render_report_shows_per_assessment_errors(self) -> None:
+        """render_report must display a panel for per-assessment errors."""
+        assessment = ImpactAssessment(
+            dep_name="bcryptjs",
+            versions={"current": "2.0.0", "latest": "3.0.0"},
+            impacts=[],
+            summary="Analysis incomplete",
+            overall_severity=Severity.WARNING,
+            errors=["Changelog fetch failed"],
+        )
+        report = build_report(
+            project_path="/home/user/project",
+            assessments=[assessment],
+            patches=[],
+            errors=[],
+        )
+
+        mock_console = MagicMock()
+        render_report(report, console=mock_console)
+
+        # Should have printed a Panel with title "Dependency Errors"
+        from rich.panel import Panel as RichPanel
+
+        panel_calls = [
+            call.args[0]
+            for call in mock_console.print.call_args_list
+            if call.args and isinstance(call.args[0], RichPanel)
+        ]
+        assert any(p.title == "Dependency Errors" for p in panel_calls)
+
+
 class TestRenderReportUsesRich:
     def test_render_report_uses_rich(self) -> None:
         assessments = [_make_assessment("requests", Severity.CRITICAL)]

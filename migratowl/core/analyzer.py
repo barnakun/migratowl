@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
+import sys
 from typing import Any
 
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, Send
+from openai import APIConnectionError, AuthenticationError
 
 from migratowl.config import settings
-from migratowl.core import cache, changelog, changelog_cache, code_parser, impact, patcher, rag, registry, scanner
+from migratowl.core import cache, changelog, changelog_cache, code_parser, impact, llm, patcher, rag, registry, scanner
 
 # Import report as a module reference so tests can patch it.
 from migratowl.core import report as report  # noqa: PLW0127
@@ -20,7 +24,10 @@ from migratowl.models.schemas import (
     DepAnalysisState,
     ImpactAssessment,
     PatchSet,
+    Severity,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_RAG_RETRIES = 3
 
@@ -39,18 +46,77 @@ def get_dep_semaphore() -> asyncio.Semaphore:
 
 
 # ---------------------------------------------------------------------------
+# Error message helpers
+# ---------------------------------------------------------------------------
+
+# Matches "Error code: NNN - {..." pattern from OpenAI SDK errors
+_API_ERROR_RE = re.compile(r"Error code:\s*(\d+)\s*-\s*\{")
+# Matches "N validation errors for ModelName" from Pydantic
+_VALIDATION_ERROR_RE = re.compile(r"(\d+)\s+validation\s+errors?\s+for\s+(\w+)")
+
+
+def _clean_error_message(exc: BaseException, *, max_length: int = 200) -> str:
+    """Extract a concise, human-readable message from an exception.
+
+    Handles verbose patterns from common libraries:
+    - OpenAI SDK: 'Error code: 401 - {full JSON dict}' → 'Exception (HTTP 401)'
+    - Pydantic: multi-line validation errors → '3 validation errors for Model'
+    - General: truncates to max_length
+    """
+    raw = str(exc)
+
+    # OpenAI SDK: strip the raw JSON dict
+    match = _API_ERROR_RE.search(raw)
+    if match:
+        code = match.group(1)
+        exc_type = type(exc).__name__
+        return f"{exc_type} (HTTP {code})"
+
+    # Pydantic ValidationError: extract just the summary line
+    match = _VALIDATION_ERROR_RE.search(raw)
+    if match:
+        return f"{match.group(1)} validation errors for {match.group(2)}"
+
+    # Strip newlines for any multi-line exception messages
+    if "\n" in raw:
+        raw = raw.split("\n")[0]
+
+    if len(raw) > max_length:
+        raw = raw[: max_length - 3] + "..."
+    return raw
+
+
+# ---------------------------------------------------------------------------
 # Per-dependency worker nodes (DepAnalysisState)
 # ---------------------------------------------------------------------------
 
 
+def _make_degraded_assessment(state: DepAnalysisState, error_msg: str) -> dict:
+    """Build a degraded ImpactAssessment dict when a node cannot complete."""
+    return ImpactAssessment(
+        dep_name=state["dep_name"],
+        versions={"current": state["current_version"], "latest": state["latest_version"]},
+        impacts=[],
+        summary=f"Analysis incomplete for {state['dep_name']}",
+        overall_severity=Severity.WARNING,
+        warnings=state.get("warnings", []),
+        errors=[error_msg],
+    ).model_dump()
+
+
 async def check_cache_node(state: DepAnalysisState) -> Command:
     """Return cached impact assessment if available, skipping the full pipeline."""
-    cached = cache.get_cached_assessment(
-        state["project_path"],
-        state["dep_name"],
-        state["current_version"],
-        state["latest_version"],
-    )
+    try:
+        cached = cache.get_cached_assessment(
+            state["project_path"],
+            state["dep_name"],
+            state["current_version"],
+            state["latest_version"],
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Cache read failed for %s, continuing without cache", state["dep_name"])
+        logger.debug("Cache read traceback for %s", state["dep_name"], exc_info=True)
+        return Command(goto="fetch_changelog", update={})
     if cached is not None:
         return Command(goto=END, update={"impact_assessments": [cached]})
     return Command(goto="fetch_changelog", update={})
@@ -63,16 +129,39 @@ async def fetch_changelog_node(state: DepAnalysisState) -> Command:
     pipeline concurrently (default 20). Cache hits never reach this node.
     """
     async with get_dep_semaphore():
-        cached = changelog_cache.get_cached_changelog(state["dep_name"])
+        # Cache read is non-fatal
+        try:
+            cached = changelog_cache.get_cached_changelog(state["dep_name"])
+        except Exception:  # noqa: BLE001
+            logger.warning("Changelog cache read failed for %s", state["dep_name"])
+            logger.debug("Changelog cache read traceback for %s", state["dep_name"], exc_info=True)
+            cached = None
+
         if cached is not None:
             text, warnings = cached
         else:
-            text, warnings = await changelog.fetch_changelog(
-                changelog_url=state["changelog_url"] or None,
-                repository_url=state["repository_url"] or None,
-                dep_name=state["dep_name"],
-            )
-            changelog_cache.set_cached_changelog(state["dep_name"], text, warnings)
+            try:
+                text, warnings = await changelog.fetch_changelog(
+                    changelog_url=state["changelog_url"] or None,
+                    repository_url=state["repository_url"] or None,
+                    dep_name=state["dep_name"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                error_msg = f"Changelog fetch failed for {state['dep_name']}: {_clean_error_message(exc)}"
+                logger.warning(error_msg)
+                logger.debug("Changelog fetch traceback for %s", state["dep_name"], exc_info=True)
+                return Command(
+                    goto=END,
+                    update={"impact_assessments": [_make_degraded_assessment(state, error_msg)]},
+                )
+
+            # Cache write is non-fatal
+            try:
+                changelog_cache.set_cached_changelog(state["dep_name"], text, warnings)
+            except Exception:  # noqa: BLE001
+                logger.warning("Changelog cache write failed for %s", state["dep_name"])
+                logger.debug("Changelog cache write traceback for %s", state["dep_name"], exc_info=True)
+
     update: dict = {"changelog": text}
     if warnings:
         update["warnings"] = warnings
@@ -81,21 +170,31 @@ async def fetch_changelog_node(state: DepAnalysisState) -> Command:
 
 async def embed_changelog_node(state: DepAnalysisState) -> Command:
     """Chunk and embed changelog into ChromaDB."""
-    dep_name = state["dep_name"]
-    chunks = changelog.chunk_changelog_by_version(state["changelog"])
-    warnings: list[str] = []
+    try:
+        dep_name = state["dep_name"]
+        chunks = changelog.chunk_changelog_by_version(state["changelog"])
+        warnings: list[str] = []
 
-    if not chunks:
-        warnings.append(f"No parseable version headers found in {dep_name} changelog")
-    else:
-        chunks = changelog.filter_chunks_by_version_range(chunks, state["current_version"], state["latest_version"])
         if not chunks:
-            warnings.append(
-                f"No changelog entries found for {dep_name} between "
-                f"{state['current_version']} and {state['latest_version']}"
-            )
+            warnings.append(f"No parseable version headers found in {dep_name} changelog")
+        else:
+            chunks = changelog.filter_chunks_by_version_range(chunks, state["current_version"], state["latest_version"])
+            if not chunks:
+                warnings.append(
+                    f"No changelog entries found for {dep_name} between "
+                    f"{state['current_version']} and {state['latest_version']}"
+                )
 
-    await rag.embed_changelog(dep_name, chunks, state["project_path"])
+        await rag.embed_changelog(dep_name, chunks, state["project_path"])
+    except Exception as exc:  # noqa: BLE001
+        error_msg = f"Embed changelog failed for {state['dep_name']}: {_clean_error_message(exc)}"
+        logger.warning(error_msg)
+        logger.debug("Embed changelog traceback for %s", state["dep_name"], exc_info=True)
+        return Command(
+            goto=END,
+            update={"impact_assessments": [_make_degraded_assessment(state, error_msg)]},
+        )
+
     update: dict = {}
     if warnings:
         update["warnings"] = warnings
@@ -109,11 +208,13 @@ async def rag_analyze_node(state: DepAnalysisState) -> Command:
     )
     try:
         result = await rag.query(query_text, state["dep_name"], project_path=state["project_path"])
-    except Exception:
-        # LLM validation failures (e.g. small models producing bad JSON) — continue with empty results
+    except Exception as exc:  # noqa: BLE001
+        warn_msg = f"RAG analysis failed for {state['dep_name']}: {_clean_error_message(exc)}"
+        logger.warning(warn_msg)
+        logger.debug("RAG analysis traceback for %s", state["dep_name"], exc_info=True)
         return Command(
             goto="parse_code",
-            update={"rag_results": [], "rag_confidence": 0.0},
+            update={"rag_results": [], "rag_confidence": 0.0, "node_errors": [warn_msg]},
         )
 
     rag_results = [bc.model_dump() for bc in result.breaking_changes]
@@ -146,7 +247,16 @@ async def refine_query_node(state: DepAnalysisState) -> Command:
 
 async def parse_code_node(state: DepAnalysisState) -> Command:
     """Find code usages of the dependency in the project."""
-    usages = await code_parser.find_usages(state["project_path"], state["dep_name"])
+    try:
+        usages = await code_parser.find_usages(state["project_path"], state["dep_name"])
+    except Exception as exc:  # noqa: BLE001
+        warn_msg = f"Code parsing failed for {state['dep_name']}: {_clean_error_message(exc)}"
+        logger.warning(warn_msg)
+        logger.debug("Code parsing traceback for %s", state["dep_name"], exc_info=True)
+        return Command(
+            goto="assess_impact",
+            update={"code_usages": [], "node_errors": [warn_msg]},
+        )
     return Command(
         goto="assess_impact",
         update={"code_usages": [u.model_dump() for u in usages]},
@@ -162,25 +272,40 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
     if not code_usages:
         node_warnings.append(f"No usages of {state['dep_name']} found in project code")
 
-    assessment = await impact.assess_impact(
-        dep_name=state["dep_name"],
-        current_version=state["current_version"],
-        latest_version=state["latest_version"],
-        breaking_changes=breaking_changes,
-        code_usages=code_usages,
-    )
+    try:
+        assessment = await impact.assess_impact(
+            dep_name=state["dep_name"],
+            current_version=state["current_version"],
+            latest_version=state["latest_version"],
+            breaking_changes=breaking_changes,
+            code_usages=code_usages,
+        )
+    except Exception as exc:  # noqa: BLE001
+        error_msg = f"Impact assessment failed for {state['dep_name']}: {_clean_error_message(exc)}"
+        logger.warning(error_msg)
+        logger.debug("Impact assessment traceback for %s", state["dep_name"], exc_info=True)
+        return Command(
+            goto=END,
+            update={"impact_assessments": [_make_degraded_assessment(state, error_msg)]},
+        )
 
     all_warnings = state.get("warnings", []) + node_warnings
+    all_errors = state.get("node_errors", [])
     assessment_dict = assessment.model_dump()
     assessment_dict["warnings"] = all_warnings
+    assessment_dict["errors"] = all_errors
 
-    await cache.set_cached_assessment(
-        state["project_path"],
-        state["dep_name"],
-        state["current_version"],
-        state["latest_version"],
-        assessment_dict,
-    )
+    try:
+        await cache.set_cached_assessment(
+            state["project_path"],
+            state["dep_name"],
+            state["current_version"],
+            state["latest_version"],
+            assessment_dict,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Cache write failed for %s", state["dep_name"])
+        logger.debug("Cache write traceback for %s", state["dep_name"], exc_info=True)
 
     return Command(goto=END, update={"impact_assessments": [assessment_dict]})
 
@@ -237,6 +362,7 @@ def fan_out_deps(state: AnalysisState) -> list[Send]:
                 "code_usages": [],
                 "impact_assessments": [],
                 "warnings": [],
+                "node_errors": [],
             },
         )
         for dep in state["dependencies"]
@@ -333,8 +459,31 @@ def build_analysis_graph() -> Any:
     return builder.compile()
 
 
+async def _preflight_api_check() -> None:
+    """Verify the OpenAI API key and connectivity before running the full pipeline.
+
+    Makes one cheap embedding call. Fatal errors (auth, connection) cause an
+    immediate exit with a clear message. Transient errors (rate limit, 500) are
+    ignored — individual nodes handle those with degraded assessments.
+    """
+    if settings.use_local_llm:
+        return
+    try:
+        await llm.get_embedding("preflight check")
+    except AuthenticationError:
+        logger.error("OpenAI API key is invalid — check MIGRATOWL_OPENAI_API_KEY")
+        sys.exit(1)
+    except APIConnectionError:
+        logger.error("Cannot connect to OpenAI API — check your network or MIGRATOWL_OPENAI_API_KEY")
+        sys.exit(1)
+    except Exception:  # noqa: BLE001
+        # Transient errors (rate limit, server error) — don't block analysis
+        logger.debug("Pre-flight API check failed with transient error, continuing", exc_info=True)
+
+
 async def analyze(project_path: str, fix_mode: bool = False) -> str:
     """Run the full analysis pipeline and return report JSON."""
+    await _preflight_api_check()
     graph = build_analysis_graph()
 
     initial_state: AnalysisState = {
