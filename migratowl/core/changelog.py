@@ -35,6 +35,15 @@ async def fetch_changelog(
         except Exception:
             pass
 
+    # Step 2: extract changelog link from README.
+    if repository_url:
+        readme_link = await _fetch_changelog_link_from_readme(repository_url)
+        if readme_link and readme_link != changelog_url:
+            try:
+                return await _fetch_from_url(readme_link), []
+            except Exception:
+                pass
+
     if repository_url:
         # With a token: API is cheap (5 000 req/hr) → try it before slow file probing.
         # Without token: preserve quota (60 req/hr) → file probing first, API last.
@@ -77,6 +86,93 @@ async def _fetch_from_url(url: str) -> str:
 
 # Regex to find a GitHub blob URL embedded in stub/redirect files.
 _GITHUB_BLOB_RE = re.compile(r"https?://github\.com/([^/\s]+)/([^/\s]+)/blob/([^/\s]+)/([^\s`>\"']+)")
+
+# --- README changelog-link extraction regexes ---
+
+_CHANGELOG_LINK_KEYWORDS_RE = re.compile(
+    r"change[\s_-]?log|changes|history|releases|news|what.?s[\s_-]?new",
+    re.IGNORECASE,
+)
+
+# Captures link text (group 1) and URL (group 2), supports one level of nesting for badges.
+_MD_LINK_RE = re.compile(r"\[([^\[\]]*(?:\[[^\]]*\][^\[\]]*)*)\]\(([^)\s]+)\)")
+
+_CHANGELOG_HEADING_RE = re.compile(
+    r"^#{1,6}\s*(?:change[\s_-]?log|changes|history|releases|news|what.?s[\s_-]?new)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_BARE_URL_RE = re.compile(r"https?://[^\s\"'<>)\]]+")
+
+_README_CANDIDATES = [
+    ("README.md", "main"),
+    ("README.md", "master"),
+    ("README.rst", "main"),
+    ("README.rst", "master"),
+]
+
+_GITHUB_OWNER_REPO_RE = re.compile(r"github\.com[/:]([^/]+)/([^/#]+?)(?:\.git)?(?:[#/]|$)")
+
+
+def _extract_changelog_link(text: str) -> str | None:
+    """Scan raw README text for a changelog URL.
+
+    Strategies (in order):
+    1. Markdown links where text or URL contains changelog keywords.
+    2. Badge-wrapped links ``[![...](badge)](url)`` where URL contains keywords.
+    3. Heading (``## Changelog``) followed by a bare URL within 5 lines.
+    """
+    if not text:
+        return None
+
+    # Strategy 1 & 2: Markdown links (badge-wrapped links are captured by the
+    # same regex since nested [] are supported).
+    for m in _MD_LINK_RE.finditer(text):
+        link_text, url = m.group(1), m.group(2)
+        if not url.startswith(("http://", "https://")):
+            continue
+        if _CHANGELOG_LINK_KEYWORDS_RE.search(link_text) or _CHANGELOG_LINK_KEYWORDS_RE.search(url):
+            return url
+
+    # Strategy 3: Heading + bare URL within 5 lines.
+    for heading_match in _CHANGELOG_HEADING_RE.finditer(text):
+        after = text[heading_match.end() :]
+        lines_after = after.split("\n", 6)[:6]  # heading line remainder + 5 lines
+        for line in lines_after:
+            url_match = _BARE_URL_RE.search(line)
+            if url_match:
+                return url_match.group(0)
+
+    return None
+
+
+async def _fetch_changelog_link_from_readme(repository_url: str) -> str | None:
+    """Try to extract a changelog link from the project's README on GitHub.
+
+    Tries README.md/rst on main/master branches sequentially.  Returns the
+    extracted URL or None.
+    """
+    match = _GITHUB_OWNER_REPO_RE.search(repository_url)
+    if not match:
+        return None
+
+    owner, repo = match.group(1), match.group(2)
+    client = get_http_client()
+
+    for filename, branch in _README_CANDIDATES:
+        url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}"
+        try:
+            r = await client.get(url)
+            if r.status_code != 200:
+                continue
+            link = _extract_changelog_link(r.text)
+            if link:
+                return link
+        except Exception:
+            continue
+
+    return None
+
 
 # Changelog filenames tried at the root and inside every subdirectory.
 _CHANGELOG_FILENAMES: list[str] = [

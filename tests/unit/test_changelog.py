@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from migratowl.core.changelog import (
+    _extract_changelog_link,
+    _fetch_changelog_link_from_readme,
     chunk_changelog_by_version,
     fetch_changelog,
     filter_chunks_by_version_range,
@@ -490,6 +492,11 @@ class TestFetchChangelog:
                 side_effect=Exception("not found"),
             ),
             patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
                 "migratowl.core.changelog._fetch_from_github",
                 new_callable=AsyncMock,
                 return_value="# Changes\n## v1.0.0\n- Init",
@@ -506,10 +513,17 @@ class TestFetchChangelog:
 
     @pytest.mark.asyncio
     async def test_returns_empty_with_warning_when_all_fail(self) -> None:
-        with patch(
-            "migratowl.core.changelog._fetch_from_github",
-            new_callable=AsyncMock,
-            side_effect=Exception("not found"),
+        with (
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github",
+                new_callable=AsyncMock,
+                side_effect=Exception("not found"),
+            ),
         ):
             text, warnings = await fetch_changelog(
                 changelog_url=None,
@@ -536,6 +550,11 @@ class TestFetchChangelog:
         """When raw file probing finds no CHANGELOG.md, GitHub Releases API is tried."""
         with (
             patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
                 "migratowl.core.changelog._fetch_from_github",
                 new_callable=AsyncMock,
                 side_effect=FileNotFoundError("no changelog file"),
@@ -557,8 +576,13 @@ class TestFetchChangelog:
 
     @pytest.mark.asyncio
     async def test_returns_warning_when_github_releases_also_fails(self) -> None:
-        """Warning is returned only after all three strategies are exhausted."""
+        """Warning is returned only after all four strategies are exhausted."""
         with (
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch(
                 "migratowl.core.changelog._fetch_from_github",
                 new_callable=AsyncMock,
@@ -873,6 +897,11 @@ class TestFetchChangelogStrategyOrdering:
         with (
             patch("migratowl.core.changelog._fetch_from_github_releases", mock_releases),
             patch("migratowl.core.changelog._fetch_from_github", mock_file_probe),
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch("migratowl.core.changelog.settings") as mock_settings,
         ):
             mock_settings.github_token = "ghp_testtoken"
@@ -900,6 +929,11 @@ class TestFetchChangelogStrategyOrdering:
         with (
             patch("migratowl.core.changelog._fetch_from_github_releases", mock_releases),
             patch("migratowl.core.changelog._fetch_from_github", mock_file_probe),
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch("migratowl.core.changelog.settings") as mock_settings,
         ):
             mock_settings.github_token = None
@@ -927,6 +961,11 @@ class TestFetchChangelogStrategyOrdering:
         with (
             patch("migratowl.core.changelog._fetch_from_github_releases", mock_releases),
             patch("migratowl.core.changelog._fetch_from_github", mock_file_probe),
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch("migratowl.core.changelog.settings") as mock_settings,
         ):
             mock_settings.github_token = "ghp_testtoken"
@@ -1126,3 +1165,276 @@ class TestGitHubReleasesPagination:
 
         assert call_count == 1
         assert "v1.0.0" in text
+
+
+# ---------------------------------------------------------------------------
+# Extract changelog link from README text
+# ---------------------------------------------------------------------------
+
+
+class TestExtractChangelogLink:
+    def test_markdown_link_with_changelog_text(self) -> None:
+        text = "See [Changelog](https://example.com/CHANGELOG.md) for details."
+        assert _extract_changelog_link(text) == "https://example.com/CHANGELOG.md"
+
+    def test_markdown_link_with_changes_text(self) -> None:
+        text = "Read [Changes](https://example.com/changes.md)."
+        assert _extract_changelog_link(text) == "https://example.com/changes.md"
+
+    def test_markdown_link_with_history_text(self) -> None:
+        text = "See [History](https://example.com/HISTORY.md)."
+        assert _extract_changelog_link(text) == "https://example.com/HISTORY.md"
+
+    def test_markdown_link_with_releases_text(self) -> None:
+        text = "Check [Releases](https://github.com/owner/repo/releases)."
+        assert _extract_changelog_link(text) == "https://github.com/owner/repo/releases"
+
+    def test_markdown_link_with_whats_new_text(self) -> None:
+        text = "See [What's New](https://example.com/whats-new.md)."
+        assert _extract_changelog_link(text) == "https://example.com/whats-new.md"
+
+    def test_markdown_link_with_change_log_text(self) -> None:
+        text = "See [Change Log](https://example.com/changelog.md)."
+        assert _extract_changelog_link(text) == "https://example.com/changelog.md"
+
+    def test_case_insensitive_keyword(self) -> None:
+        text = "See [CHANGELOG](https://example.com/CHANGELOG.md)."
+        assert _extract_changelog_link(text) == "https://example.com/CHANGELOG.md"
+
+    def test_badge_wrapped_link(self) -> None:
+        text = "[![changelog](https://img.shields.io/badge/changelog)](https://example.com/CHANGELOG.md)"
+        assert _extract_changelog_link(text) == "https://example.com/CHANGELOG.md"
+
+    def test_heading_plus_bare_url(self) -> None:
+        text = "## Changelog\n\nSee details at\nhttps://example.com/CHANGELOG.md\n"
+        assert _extract_changelog_link(text) == "https://example.com/CHANGELOG.md"
+
+    def test_heading_plus_bare_url_within_5_lines(self) -> None:
+        text = "## Changelog\nline1\nline2\nline3\nhttps://example.com/CHANGELOG.md\n"
+        assert _extract_changelog_link(text) == "https://example.com/CHANGELOG.md"
+
+    def test_heading_plus_bare_url_beyond_5_lines_returns_none(self) -> None:
+        text = "## Changelog\n1\n2\n3\n4\n5\nhttps://example.com/CHANGELOG.md\n"
+        assert _extract_changelog_link(text) is None
+
+    def test_returns_none_for_empty_string(self) -> None:
+        assert _extract_changelog_link("") is None
+
+    def test_returns_none_when_no_keywords(self) -> None:
+        text = "See [Installation](https://example.com/install.md)."
+        assert _extract_changelog_link(text) is None
+
+    def test_returns_none_for_unrelated_urls(self) -> None:
+        text = "Visit https://example.com for more info."
+        assert _extract_changelog_link(text) is None
+
+    def test_first_match_wins(self) -> None:
+        text = "[Changelog](https://first.com/changelog)\n[History](https://second.com/history)\n"
+        assert _extract_changelog_link(text) == "https://first.com/changelog"
+
+    def test_keyword_in_url_not_text(self) -> None:
+        """Link text is generic but URL contains changelog keyword."""
+        text = "See [docs](https://example.com/changelog.md)."
+        assert _extract_changelog_link(text) == "https://example.com/changelog.md"
+
+
+# ---------------------------------------------------------------------------
+# Fetch changelog link from README
+# ---------------------------------------------------------------------------
+
+
+class TestFetchChangelogLinkFromReadme:
+    @pytest.mark.asyncio
+    async def test_finds_link_in_readme_on_main(self) -> None:
+        readme_text = "# MyLib\n\nSee [Changelog](https://example.com/CHANGELOG.md)."
+
+        async def fake_get(url: str) -> object:
+            if "main/README.md" in url:
+                return type("R", (), {"status_code": 200, "text": readme_text})()
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            result = await _fetch_changelog_link_from_readme("https://github.com/owner/repo")
+
+        assert result == "https://example.com/CHANGELOG.md"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_master_branch(self) -> None:
+        readme_text = "# MyLib\n\n[Changes](https://example.com/changes.md)"
+
+        async def fake_get(url: str) -> object:
+            if "master/README.md" in url:
+                return type("R", (), {"status_code": 200, "text": readme_text})()
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            result = await _fetch_changelog_link_from_readme("https://github.com/owner/repo")
+
+        assert result == "https://example.com/changes.md"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_readme_rst(self) -> None:
+        readme_md = "# MyLib\n\n[History](https://example.com/HISTORY.rst)"
+
+        async def fake_get(url: str) -> object:
+            if "README.rst" in url and "main" in url:
+                return type("R", (), {"status_code": 200, "text": readme_md})()
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            result = await _fetch_changelog_link_from_readme("https://github.com/owner/repo")
+
+        assert result == "https://example.com/HISTORY.rst"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_readme_has_no_link(self) -> None:
+        readme_text = "# MyLib\n\nA great library."
+
+        async def fake_get(url: str) -> object:
+            if "README.md" in url and "main" in url:
+                return type("R", (), {"status_code": 200, "text": readme_text})()
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            result = await _fetch_changelog_link_from_readme("https://github.com/owner/repo")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_all_readmes_404(self) -> None:
+        async def fake_get(url: str) -> object:
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            result = await _fetch_changelog_link_from_readme("https://github.com/owner/repo")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_non_github_urls(self) -> None:
+        result = await _fetch_changelog_link_from_readme("https://gitlab.com/owner/repo")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# README link integration in fetch_changelog
+# ---------------------------------------------------------------------------
+
+
+class TestFetchChangelogReadmeLink:
+    @pytest.mark.asyncio
+    async def test_readme_link_tried_before_github_strategies(self) -> None:
+        """When changelog_url fails, README link is tried before GitHub file probe."""
+        with (
+            patch(
+                "migratowl.core.changelog._fetch_from_url",
+                new_callable=AsyncMock,
+                side_effect=[Exception("not found"), "## v2.0.0\n- Change"],
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value="https://example.com/from-readme/CHANGELOG.md",
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github",
+                new_callable=AsyncMock,
+            ) as mock_github,
+        ):
+            text, warnings = await fetch_changelog(
+                changelog_url="https://broken.com/CHANGELOG.md",
+                repository_url="https://github.com/owner/repo",
+                dep_name="test-pkg",
+            )
+            assert "v2.0.0" in text
+            assert warnings == []
+            mock_github.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_readme_link_skipped_if_same_as_changelog_url(self) -> None:
+        """README link is not tried if it equals the already-failed changelog_url."""
+        with (
+            patch(
+                "migratowl.core.changelog._fetch_from_url",
+                new_callable=AsyncMock,
+                side_effect=[Exception("not found"), "## v1.0.0\n- Init"],
+            ) as mock_fetch,
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value="https://example.com/CHANGELOG.md",
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github",
+                new_callable=AsyncMock,
+                return_value="## v1.0.0\n- Init",
+            ),
+        ):
+            await fetch_changelog(
+                changelog_url="https://example.com/CHANGELOG.md",
+                repository_url="https://github.com/owner/repo",
+                dep_name="test-pkg",
+            )
+            # _fetch_from_url should only be called once (for changelog_url),
+            # not a second time for the duplicate readme link.
+            mock_fetch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_readme_step_skipped_when_no_repository_url(self) -> None:
+        """README extraction is not attempted when repository_url is None."""
+        with (
+            patch(
+                "migratowl.core.changelog._fetch_from_url",
+                new_callable=AsyncMock,
+                side_effect=Exception("not found"),
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+            ) as mock_readme,
+        ):
+            await fetch_changelog(
+                changelog_url="https://broken.com/CHANGELOG.md",
+                repository_url=None,
+                dep_name="test-pkg",
+            )
+            mock_readme.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_readme_returns_none_falls_through_to_github(self) -> None:
+        """When README extraction returns None, GitHub strategies are tried."""
+        with (
+            patch(
+                "migratowl.core.changelog._fetch_changelog_link_from_readme",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github",
+                new_callable=AsyncMock,
+                return_value="## v1.0.0\n- From GitHub",
+            ) as mock_github,
+        ):
+            text, warnings = await fetch_changelog(
+                changelog_url=None,
+                repository_url="https://github.com/owner/repo",
+                dep_name="test-pkg",
+            )
+            assert "From GitHub" in text
+            assert warnings == []
+            mock_github.assert_called_once()
