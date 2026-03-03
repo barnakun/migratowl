@@ -20,6 +20,7 @@ class Severity(StrEnum):
     CRITICAL = "critical"
     WARNING = "warning"
     INFO = "info"
+    UNKNOWN = "unknown"
 
 
 class ChangeType(StrEnum):

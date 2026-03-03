@@ -65,6 +65,7 @@ def render_report(report: AnalysisReport, console: Console | None = None) -> Non
             Severity.CRITICAL: "bold red",
             Severity.WARNING: "yellow",
             Severity.INFO: "green",
+            Severity.UNKNOWN: "dim",
         }
 
         for assessment in report.assessments:

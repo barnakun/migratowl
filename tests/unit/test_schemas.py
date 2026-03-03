@@ -20,6 +20,7 @@ class TestEnums:
         assert Severity.CRITICAL == "critical"
         assert Severity.WARNING == "warning"
         assert Severity.INFO == "info"
+        assert Severity.UNKNOWN == "unknown"
 
     def test_change_type_values(self) -> None:
         from migratowl.models.schemas import ChangeType

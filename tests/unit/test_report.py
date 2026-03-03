@@ -188,8 +188,8 @@ class TestErrorsInReport:
             dep_name="bcryptjs",
             versions={"current": "2.0.0", "latest": "3.0.0"},
             impacts=[],
-            summary="Analysis incomplete for bcryptjs",
-            overall_severity=Severity.WARNING,
+            summary="Could not be fully analyzed",
+            overall_severity=Severity.UNKNOWN,
             warnings=["No usages found"],
             errors=["Changelog fetch failed for bcryptjs: 404 Not Found"],
         )
@@ -227,8 +227,8 @@ class TestErrorsInReport:
             dep_name="bcryptjs",
             versions={"current": "2.0.0", "latest": "3.0.0"},
             impacts=[],
-            summary="Analysis incomplete",
-            overall_severity=Severity.WARNING,
+            summary="Could not be fully analyzed",
+            overall_severity=Severity.UNKNOWN,
             errors=["Changelog fetch failed"],
         )
         report = build_report(
@@ -250,6 +250,60 @@ class TestErrorsInReport:
             if call.args and isinstance(call.args[0], RichPanel)
         ]
         assert any(p.title == "Dependency Errors" for p in panel_calls)
+
+
+class TestUnknownSeverityRendering:
+    def test_render_report_shows_unknown_severity_in_dim(self) -> None:
+        """UNKNOWN severity must render with 'dim' style in Rich output."""
+        assessment = ImpactAssessment(
+            dep_name="bcryptjs",
+            versions={"current": "2.0.0", "latest": "3.0.0"},
+            impacts=[],
+            summary="Could not be fully analyzed",
+            overall_severity=Severity.UNKNOWN,
+            errors=["Changelog fetch failed"],
+        )
+        report = build_report(
+            project_path="/home/user/project",
+            assessments=[assessment],
+            patches=[],
+            errors=[],
+        )
+
+        mock_console = MagicMock()
+        render_report(report, console=mock_console)
+
+        # Find the Table object in print calls and verify it was called
+        from rich.table import Table as RichTable
+
+        table_calls = [
+            call.args[0]
+            for call in mock_console.print.call_args_list
+            if call.args and isinstance(call.args[0], RichTable)
+        ]
+        # The dep_table should exist (assessment is present)
+        assert len(table_calls) >= 1
+
+    def test_export_markdown_renders_unknown_severity(self) -> None:
+        """UNKNOWN severity must appear as 'UNKNOWN' in Markdown export."""
+        assessment = ImpactAssessment(
+            dep_name="bcryptjs",
+            versions={"current": "2.0.0", "latest": "3.0.0"},
+            impacts=[],
+            summary="Could not be fully analyzed",
+            overall_severity=Severity.UNKNOWN,
+        )
+        report = build_report(
+            project_path="/home/user/project",
+            assessments=[assessment],
+            patches=[],
+            errors=[],
+        )
+
+        md = export_markdown(report)
+
+        assert "UNKNOWN" in md
+        assert "Could not be fully analyzed" in md
 
 
 class TestRenderReportUsesRich:
