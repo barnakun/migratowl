@@ -97,8 +97,8 @@ def _make_degraded_assessment(state: DepAnalysisState, error_msg: str) -> dict:
         dep_name=state["dep_name"],
         versions={"current": state["current_version"], "latest": state["latest_version"]},
         impacts=[],
-        summary=f"Analysis incomplete for {state['dep_name']}",
-        overall_severity=Severity.WARNING,
+        summary="Could not be fully analyzed",
+        overall_severity=Severity.UNKNOWN,
         warnings=state.get("warnings", []),
         errors=[error_msg],
     ).model_dump()
@@ -294,6 +294,21 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
     assessment_dict = assessment.model_dump()
     assessment_dict["warnings"] = all_warnings
     assessment_dict["errors"] = all_errors
+
+    # If upstream nodes recorded errors, the analysis is incomplete
+    if all_errors and assessment_dict["overall_severity"] == Severity.INFO.value:
+        assessment_dict["overall_severity"] = Severity.UNKNOWN.value
+        assessment_dict["summary"] = "Could not be fully analyzed"
+
+    # If warnings indicate incomplete data and no actual impacts found,
+    # the "info" result is unreliable — mark as unknown
+    elif (
+        all_warnings
+        and not assessment_dict["impacts"]
+        and assessment_dict["overall_severity"] == Severity.INFO.value
+    ):
+        assessment_dict["overall_severity"] = Severity.UNKNOWN.value
+        assessment_dict["summary"] = "Could not be fully analyzed"
 
     try:
         await cache.set_cached_assessment(

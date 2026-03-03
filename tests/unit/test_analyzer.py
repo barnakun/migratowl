@@ -838,6 +838,148 @@ class TestAssessImpactNodeErrorHandling:
         assessment = result.update["impact_assessments"][0]
         assert "RAG analysis failed" in assessment["errors"][0]
 
+    @pytest.mark.asyncio
+    async def test_severity_set_to_unknown_when_errors_present(self) -> None:
+        """When node_errors are present and LLM returned INFO, severity must be UNKNOWN
+        (analysis is incomplete, not 'no issues found')."""
+        from migratowl.core.analyzer import assess_impact_node
+
+        mock_assessment = ImpactAssessment(
+            dep_name="requests",
+            versions={"current": "2.28.0", "latest": "2.31.0"},
+            impacts=[],
+            summary="No impact detected for requests",
+            overall_severity=Severity.INFO,
+        )
+
+        with (
+            patch(
+                "migratowl.core.analyzer.impact.assess_impact",
+                new_callable=AsyncMock,
+                return_value=mock_assessment,
+            ),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
+        ):
+            state = _make_dep_state(
+                rag_results=[],
+                code_usages=[],
+                node_errors=["RAG analysis failed for requests: AuthenticationError (HTTP 401)"],
+            )
+            result = await assess_impact_node(state)
+
+        assessment = result.update["impact_assessments"][0]
+        assert assessment["overall_severity"] == "unknown"
+        assert "Could not be fully analyzed" in assessment["summary"]
+
+    @pytest.mark.asyncio
+    async def test_severity_set_to_unknown_when_warnings_and_no_impacts(self) -> None:
+        """When warnings indicate incomplete data and no actual impacts found,
+        severity must be UNKNOWN (we have no data, not 'no issues')."""
+        from migratowl.core.analyzer import assess_impact_node
+
+        mock_assessment = ImpactAssessment(
+            dep_name="bcryptjs",
+            versions={"current": "2.0.0", "latest": "3.0.0"},
+            impacts=[],
+            summary="No impact detected",
+            overall_severity=Severity.INFO,
+        )
+
+        with (
+            patch(
+                "migratowl.core.analyzer.impact.assess_impact",
+                new_callable=AsyncMock,
+                return_value=mock_assessment,
+            ),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
+        ):
+            state = _make_dep_state(
+                dep_name="bcryptjs",
+                current_version="2.0.0",
+                latest_version="3.0.0",
+                rag_results=[],
+                code_usages=[],
+                warnings=["Could not fetch changelog for bcryptjs"],
+                node_errors=[],
+            )
+            result = await assess_impact_node(state)
+
+        assessment = result.update["impact_assessments"][0]
+        assert assessment["overall_severity"] == "unknown"
+        assert "Could not be fully analyzed" in assessment["summary"]
+
+    @pytest.mark.asyncio
+    async def test_severity_stays_info_when_no_warnings_no_errors(self) -> None:
+        """Clean analysis with no impacts stays INFO (genuinely no issues)."""
+        from migratowl.core.analyzer import assess_impact_node
+
+        mock_assessment = ImpactAssessment(
+            dep_name="requests",
+            versions={"current": "2.28.0", "latest": "2.31.0"},
+            impacts=[],
+            summary="No impact detected",
+            overall_severity=Severity.INFO,
+        )
+
+        with (
+            patch(
+                "migratowl.core.analyzer.impact.assess_impact",
+                new_callable=AsyncMock,
+                return_value=mock_assessment,
+            ),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
+        ):
+            state = _make_dep_state(
+                rag_results=[],
+                code_usages=[
+                    {
+                        "file_path": "a.py",
+                        "line_number": 1,
+                        "usage_type": "import",
+                        "symbol": "requests",
+                        "code_snippet": "import requests",
+                    },
+                ],
+                warnings=[],
+                node_errors=[],
+            )
+            result = await assess_impact_node(state)
+
+        assessment = result.update["impact_assessments"][0]
+        assert assessment["overall_severity"] == "info"
+
+    @pytest.mark.asyncio
+    async def test_severity_not_downgraded_when_errors_present(self) -> None:
+        """If the LLM returned CRITICAL, errors should not downgrade it to WARNING."""
+        from migratowl.core.analyzer import assess_impact_node
+
+        mock_assessment = ImpactAssessment(
+            dep_name="requests",
+            versions={"current": "2.28.0", "latest": "2.31.0"},
+            impacts=[],
+            summary="Critical breaking changes",
+            overall_severity=Severity.CRITICAL,
+        )
+
+        with (
+            patch(
+                "migratowl.core.analyzer.impact.assess_impact",
+                new_callable=AsyncMock,
+                return_value=mock_assessment,
+            ),
+            patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
+        ):
+            state = _make_dep_state(
+                rag_results=[],
+                code_usages=[],
+                node_errors=["Some error"],
+            )
+            result = await assess_impact_node(state)
+
+        assessment = result.update["impact_assessments"][0]
+        # Should stay CRITICAL, not downgrade to WARNING
+        assert assessment["overall_severity"] == "critical"
+
 
 # ---------------------------------------------------------------------------
 # scan_dependencies_node — URL inclusion
@@ -1180,8 +1322,8 @@ class TestGenerateReportNodeErrorsRoundTrip:
             dep_name="bcryptjs",
             versions={"current": "2.0.0", "latest": "3.0.0"},
             impacts=[],
-            summary="Analysis incomplete for bcryptjs",
-            overall_severity=Severity.WARNING,
+            summary="Could not be fully analyzed",
+            overall_severity=Severity.UNKNOWN,
             warnings=["No changelog found"],
             errors=["Changelog fetch failed for bcryptjs: 404 Not Found"],
         ).model_dump()
@@ -1321,8 +1463,8 @@ class TestMakeDegradedAssessment:
         assert result["dep_name"] == "requests"
         assert result["versions"] == {"current": "2.28.0", "latest": "2.31.0"}
         assert result["impacts"] == []
-        assert "incomplete" in result["summary"].lower() or "requests" in result["summary"]
-        assert result["overall_severity"] == "warning"
+        assert "Could not be fully analyzed" in result["summary"]
+        assert result["overall_severity"] == "unknown"
         assert "some prior warning" in result["warnings"]
         assert "Something went wrong" in result["errors"]
 
