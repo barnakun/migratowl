@@ -124,6 +124,71 @@ class TestQueryNpm:
 
         assert result.repository_url is None
 
+    async def test_uses_homepage_as_fallback_when_repo_missing(self) -> None:
+        """When repository field is absent but homepage is a GitHub URL, use it as repository_url."""
+        data = {
+            "name": "bcryptjs",
+            "dist-tags": {"latest": "2.4.3"},
+            "homepage": "https://github.com/dcodeIO/bcrypt.js#readme",
+        }
+        resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://registry.npmjs.org"))
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resp)
+
+        with patch("migratowl.core.registry.get_http_client", return_value=mock_client):
+            result = await _query_npm("bcryptjs")
+
+        assert result.repository_url == "https://github.com/dcodeIO/bcrypt.js"
+
+    async def test_homepage_fragment_stripped_when_used_as_fallback(self) -> None:
+        """The #readme fragment must be stripped when homepage is used as fallback."""
+        data = {
+            "name": "some-pkg",
+            "dist-tags": {"latest": "1.0.0"},
+            "homepage": "https://github.com/org/repo.js#readme",
+        }
+        resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://registry.npmjs.org"))
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resp)
+
+        with patch("migratowl.core.registry.get_http_client", return_value=mock_client):
+            result = await _query_npm("some-pkg")
+
+        assert result.repository_url is not None
+        assert "#" not in result.repository_url
+
+    async def test_homepage_url_fragment_stripped(self) -> None:
+        """The #readme fragment must be stripped from homepage_url itself, not just from the fallback repo URL."""
+        data = {
+            "name": "bcryptjs",
+            "dist-tags": {"latest": "2.4.3"},
+            "homepage": "https://github.com/dcodeIO/bcrypt.js#readme",
+        }
+        resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://registry.npmjs.org"))
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resp)
+
+        with patch("migratowl.core.registry.get_http_client", return_value=mock_client):
+            result = await _query_npm("bcryptjs")
+
+        assert result.homepage_url == "https://github.com/dcodeIO/bcrypt.js"
+
+    async def test_non_github_homepage_not_used_as_fallback(self) -> None:
+        """Homepage that is not a GitHub URL should not be used as repository_url."""
+        data = {
+            "name": "some-pkg",
+            "dist-tags": {"latest": "1.0.0"},
+            "homepage": "https://example.com/some-pkg",
+        }
+        resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://registry.npmjs.org"))
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resp)
+
+        with patch("migratowl.core.registry.get_http_client", return_value=mock_client):
+            result = await _query_npm("some-pkg")
+
+        assert result.repository_url is None
+
 
 # --- _extract_repo_url ---
 

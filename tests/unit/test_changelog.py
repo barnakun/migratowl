@@ -946,6 +946,111 @@ class TestFetchChangelogStrategyOrdering:
 # ---------------------------------------------------------------------------
 
 
+class TestDottedRepoNameParsing:
+    """Repo names with dots (e.g. bcrypt.js, Faker.js) must be captured fully."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_from_github_with_dotted_repo_name(self) -> None:
+        """bcrypt.js must not be truncated to 'bcrypt' in raw.githubusercontent.com URLs."""
+        from migratowl.core.changelog import _fetch_from_github
+
+        fetched_urls: list[str] = []
+
+        async def fake_get(url: str) -> object:
+            fetched_urls.append(url)
+            if "bcrypt.js/main/CHANGELOG.md" in url:
+                return type("R", (), {"status_code": 200, "text": "## 5.0.0\n- Breaking change"})()
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            result = await _fetch_from_github("https://github.com/dcodeIO/bcrypt.js")
+
+        assert any("bcrypt.js" in u for u in fetched_urls), f"No URL contained 'bcrypt.js': {fetched_urls}"
+        assert "Breaking change" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_from_github_releases_with_dotted_repo_name(self) -> None:
+        """GitHub API path must contain 'bcrypt.js', not 'bcrypt'."""
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases = [
+            {"tag_name": "v5.0.0", "body": "- Major update", "draft": False, "prerelease": False},
+        ]
+        mock_response = type(
+            "R",
+            (),
+            {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
+        )()
+
+        captured_urls: list[str] = []
+
+        async def fake_get(url: str, **kwargs) -> object:
+            captured_urls.append(url)
+            return mock_response
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            await _fetch_from_github_releases("https://github.com/dcodeIO/bcrypt.js")
+
+        assert any("bcrypt.js" in u for u in captured_urls), f"API URL missing 'bcrypt.js': {captured_urls}"
+
+    @pytest.mark.asyncio
+    async def test_fetch_from_github_with_ssh_dotted_repo(self) -> None:
+        """SSH-style URL 'git@github.com:Marak/Faker.js' must capture 'Faker.js'."""
+        from migratowl.core.changelog import _fetch_from_github
+
+        fetched_urls: list[str] = []
+
+        async def fake_get(url: str) -> object:
+            fetched_urls.append(url)
+            if "Faker.js/main/CHANGELOG.md" in url:
+                return type("R", (), {"status_code": 200, "text": "## 5.0.0\n- Change"})()
+            return type("R", (), {"status_code": 404, "text": ""})()
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            await _fetch_from_github("ssh://git@github.com:Marak/Faker.js")
+
+        assert any("Faker.js" in u for u in fetched_urls), f"No URL contained 'Faker.js': {fetched_urls}"
+
+    @pytest.mark.asyncio
+    async def test_fetch_from_github_strips_git_suffix_from_dotted_repo(self) -> None:
+        """'bcrypt.js.git' must be parsed as 'bcrypt.js' (strip .git suffix)."""
+        from migratowl.core.changelog import _fetch_from_github_releases
+
+        releases = [
+            {"tag_name": "v5.0.0", "body": "- Update", "draft": False, "prerelease": False},
+        ]
+        mock_response = type(
+            "R",
+            (),
+            {"json": lambda self: releases, "raise_for_status": lambda self: None, "headers": {}},
+        )()
+
+        captured_urls: list[str] = []
+
+        async def fake_get(url: str, **kwargs) -> object:
+            captured_urls.append(url)
+            return mock_response
+
+        with patch("migratowl.core.changelog.get_http_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=fake_get)
+            mock_get_client.return_value = mock_client
+            await _fetch_from_github_releases("https://github.com/dcodeIO/bcrypt.js.git")
+
+        assert any("bcrypt.js/releases" in u for u in captured_urls), (
+            f"Expected 'bcrypt.js' (not 'bcrypt.js.git') in API URL: {captured_urls}"
+        )
+
+
 class TestGitHubReleasesPagination:
     @pytest.mark.asyncio
     async def test_fetches_all_pages_when_link_next_header_present(self) -> None:

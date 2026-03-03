@@ -74,10 +74,13 @@ async def _query_npm(name: str) -> RegistryInfo:
     elif isinstance(repo, str):
         repo_url = repo
 
+    if not repo_url and homepage and "github.com" in homepage:
+        repo_url = _strip_url_fragment(homepage)
+
     return RegistryInfo(
         name=data["name"],
         latest_version=latest_version,
-        homepage_url=homepage,
+        homepage_url=_strip_url_fragment(homepage) if homepage else None,
         repository_url=repo_url or None,
         changelog_url=None,
     )

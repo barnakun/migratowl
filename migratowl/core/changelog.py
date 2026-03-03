@@ -156,7 +156,7 @@ async def _fetch_from_github(repository_url: str) -> str:
        scan it for a GitHub blob URL and follow that URL directly.
     3. If all root files fail, repeat with doc-subdirectory paths.
     """
-    match = re.search(r"github\.com[/:]([^/]+)/([^/.#]+)", repository_url)
+    match = re.search(r"github\.com[/:]([^/]+)/([^/#]+?)(?:\.git)?(?:[#/]|$)", repository_url)
     if not match:
         raise ValueError(f"Cannot parse GitHub URL: {repository_url}")
 
@@ -218,7 +218,7 @@ async def _fetch_from_github_releases(repository_url: str) -> str:
     usable releases exist.  Sends an ``Authorization`` header when
     ``MIGRATOWL_GITHUB_TOKEN`` is set.
     """
-    match = re.search(r"github\.com[/:]([^/]+)/([^/.#]+)", repository_url)
+    match = re.search(r"github\.com[/:]([^/]+)/([^/#]+?)(?:\.git)?(?:[#/]|$)", repository_url)
     if not match:
         raise ValueError(f"Cannot parse GitHub URL: {repository_url}")
 
