@@ -116,25 +116,6 @@ wheels = [
 ]
 
 [[package]]
-name = "anthropic"
-version = "0.82.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "anyio" },
-    { name = "distro" },
-    { name = "docstring-parser" },
-    { name = "httpx" },
-    { name = "jiter" },
-    { name = "pydantic" },
-    { name = "sniffio" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6f/94/3766b5414d9e35687d518943a5b2ffb2696cd5c53248eec13fa1e8a5c73d/anthropic-0.82.0.tar.gz", hash = "sha256:e217340ba40cb9e24c88aacccc365334a6c3f46778855eca5000a6aa83d73dde", size = 533270, upload-time = "2026-02-18T20:25:16.844Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5c/49/b570250e36471effbc146d22ffb111e775f11ff2d8b503b32526f25a8f23/anthropic-0.82.0-py3-none-any.whl", hash = "sha256:2525828b6798635a7a691c4c62d49bd10bbd288ab83fa4ba55851264dfa5377d", size = 456304, upload-time = "2026-02-18T20:25:18.788Z" },
-]
-
-[[package]]
 name = "anyio"
 version = "4.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1523,15 +1504,12 @@ name = "migratowl"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "anthropic" },
     { name = "chromadb" },
     { name = "fastmcp" },
     { name = "html2text" },
     { name = "httpx" },
     { name = "instructor" },
     { name = "langgraph" },
-    { name = "langsmith" },
-    { name = "mcp" },
     { name = "openai" },
     { name = "packaging" },
     { name = "pydantic" },
@@ -1544,7 +1522,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "langsmith" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1553,15 +1530,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.82,<1" },
     { name = "chromadb", specifier = ">=1.5,<2" },
     { name = "fastmcp", specifier = ">=2.14,<3" },
     { name = "html2text", specifier = ">=2024.2" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "instructor", specifier = ">=1.14,<2" },
     { name = "langgraph", specifier = ">=1.0.7,<2" },
-    { name = "langsmith", specifier = ">=0.3,<1" },
-    { name = "mcp", specifier = ">=1.25,<2" },
     { name = "openai", specifier = ">=2.21,<3" },
     { name = "packaging", specifier = ">=23" },
     { name = "pydantic", specifier = ">=2,<3" },
@@ -1574,7 +1548,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "langsmith", specifier = ">=0.3,<1" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },

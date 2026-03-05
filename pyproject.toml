@@ -7,13 +7,10 @@ license = "MIT"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "langgraph>=1.0.7,<2",
-    "langsmith>=0.3,<1",
     "chromadb>=1.5,<2",
     "instructor>=1.14,<2",
     "fastmcp>=2.14,<3",
-    "mcp>=1.25,<2",
     "openai>=2.21,<3",
-    "anthropic>=0.82,<1",
     "tree-sitter>=0.25,<1",
     "tree-sitter-language-pack>=0.13",
     "pydantic>=2,<3",
@@ -34,7 +31,6 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
     "mypy>=1.13",
-    "langsmith>=0.3,<1",
 ]
 
 [build-system]
