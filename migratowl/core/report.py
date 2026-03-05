@@ -159,6 +159,21 @@ def export_markdown(report: AnalysisReport) -> str:
                 lines.append(f"- {e}")
             lines.append("")
 
+    if report.patches:
+        lines.append("## Patches")
+        lines.append("")
+        for ps in report.patches:
+            lines.append(f"### {ps.dep_name}")
+            lines.append("")
+            if ps.unified_diff:
+                lines.append("```diff")
+                lines.append(ps.unified_diff)
+                lines.append("```")
+                lines.append("")
+            for patch in ps.patches:
+                lines.append(f"**{patch.file_path}:** {patch.explanation}")
+                lines.append("")
+
     if report.errors:
         lines.append("## Errors")
         lines.append("")

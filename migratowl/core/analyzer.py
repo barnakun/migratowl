@@ -426,7 +426,7 @@ async def generate_report_node(state: AnalysisState) -> Command:
 # ---------------------------------------------------------------------------
 
 
-def build_dep_worker_graph() -> StateGraph:
+def _build_dep_worker_graph() -> StateGraph:
     """Build the per-dependency worker StateGraph (not compiled)."""
     builder = StateGraph(DepAnalysisState)
 
@@ -445,7 +445,7 @@ def build_dep_worker_graph() -> StateGraph:
 
 def _build_dep_worker_compiled() -> Any:
     """Build and compile the per-dependency worker subgraph."""
-    return build_dep_worker_graph().compile()
+    return _build_dep_worker_graph().compile()
 
 
 def build_analysis_graph() -> Any:

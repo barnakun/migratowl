@@ -117,7 +117,10 @@ class RAGQueryResult(BaseModel):
 
 class ImpactItem(BaseModel):
     breaking_change: str
-    affected_usages: list[str] = Field(default_factory=list)
+    affected_usages: list[str] = Field(
+        default_factory=list,
+        description="File references where this breaking change affects code, in 'path/to/file.py:line_number' format",
+    )
     severity: Severity
     explanation: str
     suggested_fix: str

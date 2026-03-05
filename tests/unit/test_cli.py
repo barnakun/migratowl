@@ -74,6 +74,191 @@ class TestAnalyzeCommand:
             assert data["project_path"] == str(project_dir)
 
 
+class TestFormatFlag:
+    def test_format_markdown_writes_markdown_output(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_file = tmp_path / "report.md"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(
+                app, ["analyze", str(project_dir), "--output", str(output_file), "--format", "markdown"]
+            )
+
+            assert result.exit_code == 0
+            assert output_file.exists()
+            content = output_file.read_text()
+            assert "# MigratOwl Analysis Report" in content
+
+    def test_format_json_is_default(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_file = tmp_path / "report.json"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(app, ["analyze", str(project_dir), "--output", str(output_file)])
+
+            assert result.exit_code == 0
+            data = json.loads(output_file.read_text())
+            assert "project_path" in data
+
+    def test_format_inferred_from_json_extension(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_file = tmp_path / "report.json"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(app, ["analyze", str(project_dir), "--output", str(output_file)])
+
+            assert result.exit_code == 0
+            assert output_file.exists()
+            data = json.loads(output_file.read_text())
+            assert "project_path" in data
+
+    def test_format_inferred_from_md_extension(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_file = tmp_path / "report.md"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            # No --format flag, but .md extension should infer markdown
+            result = runner.invoke(app, ["analyze", str(project_dir), "--output", str(output_file)])
+
+            assert result.exit_code == 0
+            assert output_file.exists()
+            content = output_file.read_text()
+            assert "# MigratOwl Analysis Report" in content
+
+    def test_extension_appended_for_json(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_base = tmp_path / "report"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(
+                app, ["analyze", str(project_dir), "--output", str(output_base), "--format", "json"]
+            )
+
+            assert result.exit_code == 0
+            expected_file = tmp_path / "report.json"
+            assert expected_file.exists()
+            data = json.loads(expected_file.read_text())
+            assert "project_path" in data
+
+    def test_extension_appended_for_markdown(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_base = tmp_path / "report"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(
+                app, ["analyze", str(project_dir), "--output", str(output_base), "--format", "markdown"]
+            )
+
+            assert result.exit_code == 0
+            expected_file = tmp_path / "report.md"
+            assert expected_file.exists()
+            content = expected_file.read_text()
+            assert "# MigratOwl Analysis Report" in content
+
+    def test_matching_extension_and_format_ok(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_file = tmp_path / "report.json"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(
+                app, ["analyze", str(project_dir), "--output", str(output_file), "--format", "json"]
+            )
+
+            assert result.exit_code == 0
+            assert output_file.exists()
+            data = json.loads(output_file.read_text())
+            assert "project_path" in data
+
+    def test_conflict_extension_vs_format_errors(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_file = tmp_path / "report.json"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(
+                app, ["analyze", str(project_dir), "--output", str(output_file), "--format", "markdown"]
+            )
+
+            assert result.exit_code == 1
+            assert "conflict" in result.output.lower()
+
+    def test_no_format_no_extension_defaults_json(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        output_base = tmp_path / "report"
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            # No --format, no extension → defaults to json, appends .json
+            result = runner.invoke(app, ["analyze", str(project_dir), "--output", str(output_base)])
+
+            assert result.exit_code == 0
+            expected_file = tmp_path / "report.json"
+            assert expected_file.exists()
+            data = json.loads(expected_file.read_text())
+            assert "project_path" in data
+
+
 class TestApiKeyValidation:
     def test_missing_api_key_shows_error(self, tmp_path, monkeypatch) -> None:
         project_dir = tmp_path / "myproject"

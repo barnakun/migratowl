@@ -15,7 +15,6 @@ from migratowl.core.code_parser import (
     _IMPORT_QUERY_CACHE,
     _build_imported_symbol_map,
     _get_import_query,
-    _get_language,
     find_usages,
     parse_file,
 )
@@ -63,26 +62,6 @@ def sample_project(tmp_path: Path) -> Path:
     project.mkdir()
     (project / "app.py").write_text(PYTHON_FIXTURE)
     return project
-
-
-# --- Language detection tests ---
-
-
-def test_get_language_python() -> None:
-    assert _get_language("example.py") == "python"
-
-
-def test_get_language_javascript() -> None:
-    assert _get_language("app.js") == "javascript"
-
-
-def test_get_language_typescript() -> None:
-    assert _get_language("component.ts") == "typescript"
-    assert _get_language("component.tsx") == "typescript"
-
-
-def test_get_language_unknown() -> None:
-    assert _get_language("data.xyz") is None
 
 
 # --- Parse file tests ---

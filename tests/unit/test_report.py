@@ -140,6 +140,40 @@ class TestExportMarkdownFormat:
         assert "Something failed" in md
 
 
+class TestExportMarkdownPatches:
+    def test_export_markdown_includes_patches_section(self) -> None:
+        """Patches with unified_diff must appear in the Markdown output."""
+        assessments = [_make_assessment("requests", Severity.CRITICAL)]
+        ps = _make_patch_set("requests")
+        report = build_report(
+            project_path="/home/user/myproject",
+            assessments=assessments,
+            patches=[ps],
+            errors=[],
+        )
+
+        md = export_markdown(report)
+
+        assert "## Patches" in md
+        assert "requests" in md
+        assert "```diff" in md
+        assert "old_func(x)" in md
+
+    def test_export_markdown_no_patches_section_when_empty(self) -> None:
+        """No patches section when patches list is empty."""
+        assessments = [_make_assessment("requests", Severity.CRITICAL)]
+        report = build_report(
+            project_path="/home/user/myproject",
+            assessments=assessments,
+            patches=[],
+            errors=[],
+        )
+
+        md = export_markdown(report)
+
+        assert "## Patches" not in md
+
+
 class TestWarningsInReport:
     def test_export_markdown_renders_warnings_per_dep(self) -> None:
         """Warnings in ImpactAssessment must appear in the Markdown report."""

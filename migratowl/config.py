@@ -38,8 +38,3 @@ settings = Settings()
 def active_model() -> str:
     """Return the model name to use for completions based on current config."""
     return settings.local_llm_model if settings.use_local_llm else settings.openai_model
-
-
-def active_embedding_model() -> str:
-    """Return the embedding model name based on current config."""
-    return settings.local_embedding_model if settings.use_local_llm else settings.embedding_model

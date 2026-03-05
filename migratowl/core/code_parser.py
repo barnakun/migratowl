@@ -166,12 +166,6 @@ def _extract_call_sites(
     return usages
 
 
-def _get_language(file_path: str | Path) -> str | None:
-    """Look up language from file extension."""
-    ext = Path(file_path).suffix.lower()
-    return EXTENSION_MAP.get(ext)
-
-
 def _strip_quotes(text: str) -> str:
     """Strip surrounding quotes from a string literal."""
     if len(text) >= 2 and text[0] in ("'", '"') and text[-1] in ("'", '"'):

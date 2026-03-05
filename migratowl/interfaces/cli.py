@@ -25,6 +25,27 @@ def _get_run_analysis() -> Any:  # noqa: ANN202
 run_analysis = None
 
 
+_EXTENSION_TO_FORMAT = {".json": "json", ".md": "markdown"}
+_FORMAT_TO_EXTENSION = {"json": ".json", "markdown": ".md"}
+
+
+def _resolve_output_format(output: str, format_flag: str | None) -> tuple[str, str]:
+    """Resolve output path and format from --output extension and --format flag."""
+    ext = Path(output).suffix.lower()
+    ext_format = _EXTENSION_TO_FORMAT.get(ext)
+
+    if ext_format:
+        if format_flag is not None and format_flag != ext_format:
+            raise typer.BadParameter(
+                f"Output extension '{ext}' conflicts with --format '{format_flag}'"
+            )
+        return output, ext_format
+
+    resolved_format = format_flag if format_flag is not None else "json"
+    resolved_path = output + _FORMAT_TO_EXTENSION[resolved_format]
+    return resolved_path, resolved_format
+
+
 _ENV_TEMPLATE = """\
 # MigratOwl Configuration
 # See docs for all available settings.
@@ -49,9 +70,11 @@ _ENV_TEMPLATE = """\
 @app.command()
 def analyze(
     project_path: str = typer.Argument(..., help="Path to the project to analyze"),
-    fix: bool = typer.Option(False, "--fix", help="Generate migration patches"),
+    # TODO: --fix is not fully implemented — patch quality from the LLM is unreliable.
+    # fix: bool = typer.Option(False, "--fix", help="Generate migration patches"),
     output: str | None = typer.Option(None, "--output", "-o", help="Output file path"),
     model: str | None = typer.Option(None, "--model", "-m", help="Override the LLM model"),
+    format: str | None = typer.Option(None, "--format", "-f", help="Output format: json or markdown"),
 ) -> None:
     """Analyze project dependencies for breaking changes."""
     path = Path(project_path)
@@ -76,7 +99,7 @@ def analyze(
         from migratowl.core.http import close_http_client
 
         try:
-            result: str = await run_analysis(str(path), fix_mode=fix)
+            result: str = await run_analysis(str(path), fix_mode=False)
             return result
         finally:
             await close_http_client()
@@ -84,8 +107,21 @@ def analyze(
     result = asyncio.run(_run())
 
     if output:
-        Path(output).write_text(result)
-        console.print(f"Report written to {output}")
+        try:
+            resolved_path, resolved_format = _resolve_output_format(output, format)
+        except typer.BadParameter as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1) from e
+
+        if resolved_format == "markdown":
+            from migratowl.core.report import export_markdown
+            from migratowl.models.schemas import AnalysisReport
+
+            report = AnalysisReport.model_validate(json.loads(result))
+            Path(resolved_path).write_text(export_markdown(report))
+        else:
+            Path(resolved_path).write_text(result)
+        console.print(f"Report written to {resolved_path}")
     else:
         from migratowl.core.report import render_report
         from migratowl.models.schemas import AnalysisReport
