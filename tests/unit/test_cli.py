@@ -237,6 +237,42 @@ class TestFormatFlag:
             assert result.exit_code == 1
             assert "conflict" in result.output.lower()
 
+    def test_invalid_format_value_errors(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(
+                app, ["analyze", str(project_dir), "--output", str(tmp_path / "report"), "--format", "jsonfd"]
+            )
+
+            assert result.exit_code == 1
+            assert "invalid" in result.output.lower() or "must be" in result.output.lower()
+
+    def test_unknown_extension_errors(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ):
+            result = runner.invoke(
+                app, ["analyze", str(project_dir), "--output", str(tmp_path / "report.gdfs")]
+            )
+
+            assert result.exit_code == 1
+            assert "extension" in result.output.lower()
+
     def test_no_format_no_extension_defaults_json(self, tmp_path, monkeypatch) -> None:
         project_dir = tmp_path / "myproject"
         project_dir.mkdir()

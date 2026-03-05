@@ -25,12 +25,18 @@ def _get_run_analysis() -> Any:  # noqa: ANN202
 run_analysis = None
 
 
+_VALID_FORMATS = {"json", "markdown"}
 _EXTENSION_TO_FORMAT = {".json": "json", ".md": "markdown"}
 _FORMAT_TO_EXTENSION = {"json": ".json", "markdown": ".md"}
 
 
 def _resolve_output_format(output: str, format_flag: str | None) -> tuple[str, str]:
     """Resolve output path and format from --output extension and --format flag."""
+    if format_flag is not None and format_flag not in _VALID_FORMATS:
+        raise typer.BadParameter(
+            f"Invalid format '{format_flag}'. Must be one of: {', '.join(sorted(_VALID_FORMATS))}"
+        )
+
     ext = Path(output).suffix.lower()
     ext_format = _EXTENSION_TO_FORMAT.get(ext)
 
@@ -40,6 +46,11 @@ def _resolve_output_format(output: str, format_flag: str | None) -> tuple[str, s
                 f"Output extension '{ext}' conflicts with --format '{format_flag}'"
             )
         return output, ext_format
+
+    if ext:
+        raise typer.BadParameter(
+            f"Unrecognized output extension '{ext}'. Use .json or .md, or omit the extension"
+        )
 
     resolved_format = format_flag if format_flag is not None else "json"
     resolved_path = output + _FORMAT_TO_EXTENSION[resolved_format]
