@@ -111,3 +111,30 @@ class TestScalabilitySettings:
         monkeypatch.setenv("MIGRATOWL_SUMMARIZE_THRESHOLD", "16000")
         s = Settings()
         assert s.summarize_threshold == 16_000
+
+
+class TestIgnoredDependencies:
+    def test_default_empty_string(self) -> None:
+        s = Settings(openai_api_key="test")
+        assert s.ignored_dependencies == ""
+
+    def test_parsed_empty_string_returns_empty_list(self) -> None:
+        s = Settings(openai_api_key="test", ignored_dependencies="")
+        assert s.parsed_ignored_dependencies == []
+
+    def test_parsed_comma_separated(self) -> None:
+        s = Settings(openai_api_key="test", ignored_dependencies="requests, flask, boto3")
+        assert s.parsed_ignored_dependencies == ["requests", "flask", "boto3"]
+
+    def test_parsed_strips_whitespace(self) -> None:
+        s = Settings(openai_api_key="test", ignored_dependencies="  requests , flask  ")
+        assert s.parsed_ignored_dependencies == ["requests", "flask"]
+
+    def test_parsed_skips_empty_entries(self) -> None:
+        s = Settings(openai_api_key="test", ignored_dependencies="requests,,flask,")
+        assert s.parsed_ignored_dependencies == ["requests", "flask"]
+
+    def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MIGRATOWL_IGNORED_DEPENDENCIES", "numpy,pandas")
+        s = Settings()
+        assert s.parsed_ignored_dependencies == ["numpy", "pandas"]

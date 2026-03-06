@@ -47,7 +47,7 @@ class TestAnalyzeCommand:
             result = runner.invoke(app, ["analyze", str(project_dir)])
 
             assert result.exit_code == 0
-            mock_analyze.assert_called_once_with(str(project_dir), fix_mode=False)
+            mock_analyze.assert_called_once_with(str(project_dir), fix_mode=False, ignored_dependencies=None)
 
     def test_analyze_nonexistent_path_fails(self) -> None:
         result = runner.invoke(app, ["analyze", "/nonexistent/path/that/does/not/exist"])
@@ -293,6 +293,42 @@ class TestFormatFlag:
             assert expected_file.exists()
             data = json.loads(expected_file.read_text())
             assert "project_path" in data
+
+
+class TestIgnoreFlag:
+    def test_ignore_flag_passes_ignored_deps_to_analyzer(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ) as mock_analyze:
+            result = runner.invoke(app, ["analyze", str(project_dir), "--ignore", "requests,flask"])
+
+            assert result.exit_code == 0
+            mock_analyze.assert_called_once_with(
+                str(project_dir), fix_mode=False, ignored_dependencies=["requests", "flask"]
+            )
+
+    def test_ignore_flag_not_provided_passes_none(self, tmp_path, monkeypatch) -> None:
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+
+        monkeypatch.setattr("migratowl.interfaces.cli.settings", _fake_settings())
+
+        with patch(
+            "migratowl.interfaces.cli.run_analysis",
+            new_callable=AsyncMock,
+            return_value=_make_report_json(str(project_dir)),
+        ) as mock_analyze:
+            result = runner.invoke(app, ["analyze", str(project_dir)])
+
+            assert result.exit_code == 0
+            mock_analyze.assert_called_once_with(str(project_dir), fix_mode=False, ignored_dependencies=None)
 
 
 class TestApiKeyValidation:

@@ -40,6 +40,7 @@ def _make_parent_state(**overrides) -> dict:
         "patches": [],
         "report": "",
         "errors": [],
+        "ignored_dependencies": [],
     }
     state.update(overrides)
     return state
@@ -106,6 +107,118 @@ class TestScanDependenciesNode:
         assert len(result.update["dependencies"]) == 1
         assert result.update["dependencies"][0]["name"] == "requests"
         assert result.update["total_dependencies"] == 1
+
+
+class TestScanDependenciesNodeIgnore:
+    @pytest.mark.asyncio
+    async def test_filters_ignored_deps(self) -> None:
+        """scan_dependencies_node removes ignored deps from the outdated list."""
+        from migratowl.core.analyzer import scan_dependencies_node
+
+        mock_deps = [
+            Dependency(name="requests", current_version="2.28.0", ecosystem=Ecosystem.PYTHON, manifest_path="req.txt"),
+            Dependency(name="flask", current_version="2.0.0", ecosystem=Ecosystem.PYTHON, manifest_path="req.txt"),
+        ]
+        mock_outdated = [
+            OutdatedDependency(
+                name="requests", current_version="2.28.0", latest_version="2.31.0",
+                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+            ),
+            OutdatedDependency(
+                name="flask", current_version="2.0.0", latest_version="3.0.0",
+                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+            ),
+        ]
+
+        with (
+            patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
+        ):
+            state = _make_parent_state(ignored_dependencies=["flask"])
+            result = await scan_dependencies_node(state)
+
+        assert len(result.update["dependencies"]) == 1
+        assert result.update["dependencies"][0]["name"] == "requests"
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_and_hyphen_normalization(self) -> None:
+        """Ignore matching is case-insensitive and normalizes hyphens/underscores."""
+        from migratowl.core.analyzer import scan_dependencies_node
+
+        mock_deps = [
+            Dependency(
+                name="Flask-Login", current_version="0.5.0",
+                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+            ),
+        ]
+        mock_outdated = [
+            OutdatedDependency(
+                name="Flask-Login", current_version="0.5.0", latest_version="0.6.0",
+                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+            ),
+        ]
+
+        with (
+            patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
+        ):
+            state = _make_parent_state(ignored_dependencies=["flask_login"])
+            result = await scan_dependencies_node(state)
+
+        assert len(result.update["dependencies"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_empty_ignore_list_passes_all(self) -> None:
+        """Empty ignore list doesn't filter anything."""
+        from migratowl.core.analyzer import scan_dependencies_node
+
+        mock_deps = [
+            Dependency(name="requests", current_version="2.28.0", ecosystem=Ecosystem.PYTHON, manifest_path="req.txt"),
+        ]
+        mock_outdated = [
+            OutdatedDependency(
+                name="requests", current_version="2.28.0", latest_version="2.31.0",
+                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+            ),
+        ]
+
+        with (
+            patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
+        ):
+            state = _make_parent_state(ignored_dependencies=[])
+            result = await scan_dependencies_node(state)
+
+        assert len(result.update["dependencies"]) == 1
+
+
+class TestNormalizeDepName:
+    def test_lowercase_and_hyphen_to_underscore(self) -> None:
+        from migratowl.core.analyzer import _normalize_dep_name
+
+        assert _normalize_dep_name("Flask-Login") == "flask_login"
+
+    def test_already_normalized(self) -> None:
+        from migratowl.core.analyzer import _normalize_dep_name
+
+        assert _normalize_dep_name("requests") == "requests"
+
+    def test_mixed_case_underscores(self) -> None:
+        from migratowl.core.analyzer import _normalize_dep_name
+
+        assert _normalize_dep_name("My_Package") == "my_package"
 
 
 # ---------------------------------------------------------------------------
@@ -1440,6 +1553,43 @@ class TestAnalyze:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed["project_path"] == "/tmp/myproject"
+
+    @pytest.mark.asyncio
+    async def test_analyze_merges_ignored_dependencies(self, _mock_preflight: AsyncMock) -> None:
+        """analyze() merges CLI ignored_dependencies with config parsed_ignored_dependencies."""
+        from migratowl.core.analyzer import analyze
+
+        mock_deps = [
+            Dependency(name="requests", current_version="2.28.0", ecosystem=Ecosystem.PYTHON, manifest_path="req.txt"),
+        ]
+        mock_outdated: list = []
+        mock_report = AnalysisReport(
+            project_path="/tmp/myproject",
+            timestamp="2024-01-01T00:00:00",
+            total_dependencies=1,
+            outdated_count=0,
+            critical_count=0,
+            assessments=[],
+            patches=[],
+            errors=[],
+        )
+
+        with (
+            patch("migratowl.core.analyzer.scanner.scan_project", new_callable=AsyncMock, return_value=mock_deps),
+            patch(
+                "migratowl.core.analyzer.registry.find_outdated",
+                new_callable=AsyncMock,
+                return_value=(mock_outdated, []),
+            ),
+            patch("migratowl.core.analyzer.code_parser.find_all_usages", new_callable=AsyncMock, return_value=[]),
+            patch("migratowl.core.analyzer.report.build_report", return_value=mock_report),
+            patch("migratowl.core.analyzer.report.export_json", return_value=mock_report.model_dump_json(indent=2)),
+            patch("migratowl.core.analyzer.settings") as mock_settings,
+        ):
+            mock_settings.parsed_ignored_dependencies = ["numpy"]
+            result = await analyze("/tmp/myproject", fix_mode=False, ignored_dependencies=["flask"])
+
+        assert isinstance(result, str)
 
 
 # ---------------------------------------------------------------------------

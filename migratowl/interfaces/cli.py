@@ -86,6 +86,7 @@ def analyze(
     output: str | None = typer.Option(None, "--output", "-o", help="Output file path"),
     model: str | None = typer.Option(None, "--model", "-m", help="Override the LLM model"),
     format: str | None = typer.Option(None, "--format", "-f", help="Output format: json or markdown"),
+    ignore: str | None = typer.Option(None, "--ignore", "-i", help="Comma-separated dependencies to skip"),
 ) -> None:
     """Analyze project dependencies for breaking changes."""
     path = Path(project_path)
@@ -102,6 +103,8 @@ def analyze(
     if model:
         settings.openai_model = model
 
+    ignored_deps = [d.strip() for d in ignore.split(",") if d.strip()] if ignore else None
+
     global run_analysis  # noqa: PLW0603
     if run_analysis is None:
         run_analysis = _get_run_analysis()
@@ -110,7 +113,7 @@ def analyze(
         from migratowl.core.http import close_http_client
 
         try:
-            result: str = await run_analysis(str(path), fix_mode=False)
+            result: str = await run_analysis(str(path), fix_mode=False, ignored_dependencies=ignored_deps)
             return result
         finally:
             await close_http_client()

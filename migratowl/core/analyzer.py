@@ -33,6 +33,11 @@ from migratowl.models.schemas import (
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_dep_name(name: str) -> str:
+    """Normalize dependency name: lowercase and replace hyphens with underscores."""
+    return name.lower().replace("-", "_")
+
 # Lazily initialised semaphore that caps the number of deps running through the
 # expensive pipeline (changelog fetch → embed → RAG → impact) concurrently.
 # Cache hits in check_cache_node bypass this entirely.
@@ -313,6 +318,14 @@ async def scan_dependencies_node(state: AnalysisState) -> Command:
     deps = await scanner.scan_project(state["project_path"])
     outdated, registry_errors = await registry.find_outdated(deps)
 
+    ignored = {_normalize_dep_name(d) for d in state.get("ignored_dependencies", [])}
+    if ignored:
+        before_count = len(outdated)
+        outdated = [od for od in outdated if _normalize_dep_name(od.name) not in ignored]
+        skipped = before_count - len(outdated)
+        if skipped:
+            logger.info("Skipped %d ignored dependenc%s", skipped, "y" if skipped == 1 else "ies")
+
     dep_dicts = [
         {
             "name": od.name,
@@ -498,10 +511,14 @@ async def _preflight_api_check() -> None:
         logger.debug("Pre-flight API check failed with transient error, continuing", exc_info=True)
 
 
-async def analyze(project_path: str, fix_mode: bool = False) -> str:
+async def analyze(project_path: str, fix_mode: bool = False, ignored_dependencies: list[str] | None = None) -> str:
     """Run the full analysis pipeline and return report JSON."""
     await _preflight_api_check()
     graph = build_analysis_graph()
+
+    merged_ignored = list(settings.parsed_ignored_dependencies)
+    if ignored_dependencies:
+        merged_ignored.extend(ignored_dependencies)
 
     initial_state: AnalysisState = {
         "project_path": project_path,
@@ -513,6 +530,7 @@ async def analyze(project_path: str, fix_mode: bool = False) -> str:
         "patches": [],
         "report": "",
         "errors": [],
+        "ignored_dependencies": merged_ignored,
     }
 
     result = await graph.ainvoke(initial_state)

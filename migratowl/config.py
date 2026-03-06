@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     http_timeout: float = 30.0
     http_retry_count: int = 3
     http_retry_backoff_base: float = 0.5
+    ignored_dependencies: str = ""
+
+    @property
+    def parsed_ignored_dependencies(self) -> list[str]:
+        """Parse comma-separated ignored_dependencies string into a list."""
+        if not self.ignored_dependencies:
+            return []
+        return [d.strip() for d in self.ignored_dependencies.split(",") if d.strip()]
 
     model_config = {"env_prefix": "MIGRATOWL_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

@@ -185,6 +185,7 @@ class AnalysisState(TypedDict):
     patches: list[str]
     report: str
     errors: Annotated[list[str], operator.add]
+    ignored_dependencies: list[str]
 
 
 class DepAnalysisState(TypedDict):

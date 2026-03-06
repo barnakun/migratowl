@@ -39,7 +39,7 @@ class TestAnalyzeDependenciesTool:
                 {"project_path": "/tmp/project", "fix": False},
             )
 
-            mock_analyze.assert_called_once_with("/tmp/project", fix_mode=False)
+            mock_analyze.assert_called_once_with("/tmp/project", fix_mode=False, ignored_dependencies=None)
             # call_tool returns a ToolResult; verify the mock was called correctly
             assert result is not None
 
