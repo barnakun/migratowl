@@ -177,7 +177,9 @@ class AnalysisReport(BaseModel):
 class AnalysisState(TypedDict):
     project_path: Annotated[str, lambda _old, new: new]
     fix_mode: bool
+    total_dependencies: int
     dependencies: list[dict]
+    all_code_usages: Annotated[list[dict], lambda _old, new: new]
     impact_assessments: Annotated[list[dict], operator.add]
     patches: list[str]
     report: str
@@ -194,7 +196,7 @@ class DepAnalysisState(TypedDict):
     changelog: str
     rag_results: list[dict]
     rag_confidence: float
-    retry_count: int
+    all_code_usages: list[dict]
     code_usages: list[dict]
     impact_assessments: list[dict]
     warnings: Annotated[list[str], operator.add]

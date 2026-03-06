@@ -127,7 +127,7 @@ def _extract_call_sites(
     """Query the tree for call sites, base classes, and decorators of imported symbols.
 
     Each returned CodeUsage has symbol='{source_module}.{identifier}' so
-    _filter_usages_for_dep can match on the module prefix.
+    filter_usages_for_dep can match on the module prefix.
     """
     if not symbol_map:
         return []
@@ -237,7 +237,7 @@ async def parse_file(file_path: str | Path, language: str) -> list[CodeUsage]:
     return usages
 
 
-def _filter_usages_for_dep(usages: list[CodeUsage], dep_name: str) -> list[CodeUsage]:
+def filter_usages_for_dep(usages: list[CodeUsage], dep_name: str) -> list[CodeUsage]:
     """Filter usages where symbol matches dep_name (case-insensitive, handles dotted names).
 
     PyPI package names use hyphens (Flask-Login) while Python import names use
@@ -254,8 +254,8 @@ def _filter_usages_for_dep(usages: list[CodeUsage], dep_name: str) -> list[CodeU
     return filtered
 
 
-async def find_usages(project_path: str | Path, dep_name: str) -> list[CodeUsage]:
-    """Walk project files, parse each, and filter for dep_name usages."""
+async def find_all_usages(project_path: str | Path) -> list[CodeUsage]:
+    """Walk project files, parse each, and return ALL usages (unfiltered)."""
     project_path = Path(project_path)
     all_usages: list[CodeUsage] = []
 
@@ -272,4 +272,10 @@ async def find_usages(project_path: str | Path, dep_name: str) -> list[CodeUsage
                 logger.warning("Failed to parse %s: %s", file_path, exc, exc_info=True)
                 continue
 
-    return _filter_usages_for_dep(all_usages, dep_name)
+    return all_usages
+
+
+async def find_usages(project_path: str | Path, dep_name: str) -> list[CodeUsage]:
+    """Walk project files, parse each, and filter for dep_name usages."""
+    all_usages = await find_all_usages(project_path)
+    return filter_usages_for_dep(all_usages, dep_name)

@@ -65,12 +65,13 @@ class TestBuildReport:
             assessments=assessments,
             patches=patches,
             errors=errors,
+            total_dependencies=10,
         )
 
         assert isinstance(report, AnalysisReport)
         assert report.project_path == "/home/user/myproject"
         assert report.timestamp  # non-empty
-        assert report.total_dependencies == 3
+        assert report.total_dependencies == 10
         assert report.outdated_count == 3
         assert report.critical_count == 1
         assert len(report.assessments) == 3
@@ -89,13 +90,14 @@ class TestExportJsonRoundtrip:
             assessments=assessments,
             patches=patches,
             errors=[],
+            total_dependencies=5,
         )
 
         json_str = export_json(report)
         parsed = json.loads(json_str)
 
         assert parsed["project_path"] == "/home/user/myproject"
-        assert parsed["total_dependencies"] == 1
+        assert parsed["total_dependencies"] == 5
         assert parsed["critical_count"] == 1
         assert len(parsed["assessments"]) == 1
         assert parsed["assessments"][0]["dep_name"] == "requests"
@@ -119,6 +121,7 @@ class TestExportMarkdownFormat:
             assessments=assessments,
             patches=patches,
             errors=["Something failed"],
+            total_dependencies=10,
         )
 
         md = export_markdown(report)
@@ -150,6 +153,7 @@ class TestExportMarkdownPatches:
             assessments=assessments,
             patches=[ps],
             errors=[],
+            total_dependencies=5,
         )
 
         md = export_markdown(report)
@@ -167,6 +171,7 @@ class TestExportMarkdownPatches:
             assessments=assessments,
             patches=[],
             errors=[],
+            total_dependencies=1,
         )
 
         md = export_markdown(report)
@@ -192,6 +197,7 @@ class TestWarningsInReport:
             assessments=[assessment],
             patches=[],
             errors=[],
+            total_dependencies=5,
         )
 
         md = export_markdown(report)
@@ -208,6 +214,7 @@ class TestWarningsInReport:
             assessments=[assessment],
             patches=[],
             errors=[],
+            total_dependencies=1,
         )
 
         md = export_markdown(report)
@@ -232,6 +239,7 @@ class TestErrorsInReport:
             assessments=[assessment],
             patches=[],
             errors=[],
+            total_dependencies=1,
         )
 
         md = export_markdown(report)
@@ -248,6 +256,7 @@ class TestErrorsInReport:
             assessments=[assessment],
             patches=[],
             errors=[],
+            total_dependencies=1,
         )
 
         md = export_markdown(report)
@@ -270,6 +279,7 @@ class TestErrorsInReport:
             assessments=[assessment],
             patches=[],
             errors=[],
+            total_dependencies=1,
         )
 
         mock_console = MagicMock()
@@ -302,6 +312,7 @@ class TestUnknownSeverityRendering:
             assessments=[assessment],
             patches=[],
             errors=[],
+            total_dependencies=1,
         )
 
         mock_console = MagicMock()
@@ -332,6 +343,7 @@ class TestUnknownSeverityRendering:
             assessments=[assessment],
             patches=[],
             errors=[],
+            total_dependencies=1,
         )
 
         md = export_markdown(report)
@@ -348,6 +360,7 @@ class TestRenderReportUsesRich:
             assessments=assessments,
             patches=[],
             errors=[],
+            total_dependencies=1,
         )
 
         mock_console = MagicMock()
@@ -365,6 +378,7 @@ class TestRenderReportUsesRich:
             assessments=assessments,
             patches=[],
             errors=["an error"],
+            total_dependencies=1,
         )
 
         mock_console = MagicMock()

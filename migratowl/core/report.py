@@ -19,6 +19,7 @@ def build_report(
     assessments: list[ImpactAssessment],
     patches: list[PatchSet],
     errors: list[str],
+    total_dependencies: int,
 ) -> AnalysisReport:
     """Assemble an AnalysisReport from assessments, patches, and errors."""
     critical_count = sum(1 for a in assessments if a.overall_severity == Severity.CRITICAL)
@@ -26,7 +27,7 @@ def build_report(
     return AnalysisReport(
         project_path=project_path,
         timestamp=datetime.now(tz=UTC).isoformat(),
-        total_dependencies=len(assessments),
+        total_dependencies=total_dependencies,
         outdated_count=len(assessments),
         critical_count=critical_count,
         assessments=assessments,

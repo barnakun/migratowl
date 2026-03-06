@@ -15,6 +15,8 @@ from migratowl.core.code_parser import (
     _IMPORT_QUERY_CACHE,
     _build_imported_symbol_map,
     _get_import_query,
+    filter_usages_for_dep,
+    find_all_usages,
     find_usages,
     parse_file,
 )
@@ -343,3 +345,48 @@ class TestLoggingAndValidation:
 
         assert len(parse_calls) == 2
         assert any("requests" in u.symbol for u in usages)
+
+
+# --- find_all_usages + filter_usages_for_dep tests ---
+
+
+@pytest.mark.asyncio()
+async def test_find_all_usages_returns_unfiltered(tmp_path: Path) -> None:
+    """find_all_usages returns usages from ALL deps, not filtered to one."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "app.py").write_text("import requests\nfrom flask import Flask\n")
+
+    usages = await find_all_usages(proj)
+    symbols = {u.symbol for u in usages}
+    assert "requests" in symbols
+    assert "flask" in symbols
+
+
+@pytest.mark.asyncio()
+async def test_find_usages_delegates_to_find_all_usages(tmp_path: Path) -> None:
+    """find_usages still returns only the requested dep's usages (backward compat)."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "app.py").write_text("import requests\nfrom flask import Flask\n")
+
+    usages = await find_usages(proj, "requests")
+    assert all("requests" in u.symbol.lower() for u in usages)
+    assert not any("flask" == u.symbol for u in usages)
+
+
+def test_filter_usages_for_dep_is_public() -> None:
+    """filter_usages_for_dep (no underscore) is importable and works."""
+    usages = [
+        CodeUsage(
+            file_path="a.py", line_number=1, usage_type="import",
+            symbol="requests", code_snippet="import requests",
+        ),
+        CodeUsage(
+            file_path="a.py", line_number=2, usage_type="import",
+            symbol="flask", code_snippet="from flask import Flask",
+        ),
+    ]
+    filtered = filter_usages_for_dep(usages, "requests")
+    assert len(filtered) == 1
+    assert filtered[0].symbol == "requests"

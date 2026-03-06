@@ -195,13 +195,16 @@ class TestTypedDictStates:
         state: AnalysisState = {
             "project_path": "/tmp/project",
             "fix_mode": False,
+            "total_dependencies": 0,
             "dependencies": [],
+            "all_code_usages": [],
             "impact_assessments": [],
             "patches": [],
             "report": "",
             "errors": [],
         }
         assert state["project_path"] == "/tmp/project"
+        assert state["all_code_usages"] == []
 
     def test_dep_analysis_state_as_dict(self) -> None:
         from migratowl.models.schemas import DepAnalysisState
@@ -216,11 +219,12 @@ class TestTypedDictStates:
             "changelog": "",
             "rag_results": [],
             "rag_confidence": 0.0,
-            "retry_count": 0,
             "code_usages": [],
+            "all_code_usages": [],
             "impact": {},
         }
         assert state["dep_name"] == "requests"
+        assert state["all_code_usages"] == []
 
     def test_analysis_state_has_add_reducers(self) -> None:
         from migratowl.models.schemas import AnalysisState

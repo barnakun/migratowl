@@ -31,7 +31,9 @@ def _make_parent_state(**overrides) -> dict:
     state: dict = {
         "project_path": "/tmp/myproject",
         "fix_mode": False,
+        "total_dependencies": 0,
         "dependencies": [],
+        "all_code_usages": [],
         "impact_assessments": [],
         "patches": [],
         "report": "",
@@ -53,7 +55,7 @@ def _make_dep_state(**overrides) -> dict:
         "changelog": "",
         "rag_results": [],
         "rag_confidence": 0.0,
-        "retry_count": 0,
+        "all_code_usages": [],
         "code_usages": [],
         "warnings": [],
         "node_errors": [],
@@ -97,10 +99,62 @@ class TestScanDependenciesNode:
             result = await scan_dependencies_node(state)
 
         assert isinstance(result, Command)
-        assert result.goto == "fan_out"
+        assert result.goto == "parse_all_code"
         assert "dependencies" in result.update
         assert len(result.update["dependencies"]) == 1
         assert result.update["dependencies"][0]["name"] == "requests"
+        assert result.update["total_dependencies"] == 1
+
+
+# ---------------------------------------------------------------------------
+# parse_all_code_node
+# ---------------------------------------------------------------------------
+
+
+class TestParseAllCodeNode:
+    @pytest.mark.asyncio
+    async def test_returns_usages(self) -> None:
+        """parse_all_code_node stores all usages and routes to fan_out."""
+        from migratowl.core.analyzer import parse_all_code_node
+
+        mock_usages = [
+            CodeUsage(
+                file_path="a.py", line_number=1, usage_type="import",
+                symbol="requests", code_snippet="import requests",
+            ),
+            CodeUsage(
+                file_path="a.py", line_number=2, usage_type="import",
+                symbol="flask", code_snippet="from flask import Flask",
+            ),
+        ]
+
+        with patch(
+            "migratowl.core.analyzer.code_parser.find_all_usages",
+            new_callable=AsyncMock,
+            return_value=mock_usages,
+        ):
+            state = _make_parent_state()
+            result = await parse_all_code_node(state)
+
+        assert result.goto == "fan_out"
+        assert len(result.update["all_code_usages"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_handles_error(self) -> None:
+        """parse_all_code_node continues to fan_out with empty usages on error."""
+        from migratowl.core.analyzer import parse_all_code_node
+
+        with patch(
+            "migratowl.core.analyzer.code_parser.find_all_usages",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("tree-sitter crash"),
+        ):
+            state = _make_parent_state()
+            result = await parse_all_code_node(state)
+
+        assert result.goto == "fan_out"
+        assert result.update["all_code_usages"] == []
+        assert any("parsing failed" in e.lower() for e in result.update["errors"])
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +198,34 @@ class TestFanOutDeps:
         # node_errors must be initialised in the Send payload
         assert result[0].arg["node_errors"] == []
         assert result[1].arg["node_errors"] == []
+        # all_code_usages must be passed from parent state
+        assert result[0].arg["all_code_usages"] == []
+        assert result[1].arg["all_code_usages"] == []
+
+    def test_fan_out_deps_passes_all_code_usages(self) -> None:
+        from migratowl.core.analyzer import fan_out_deps
+
+        usages = [
+            {
+                "file_path": "a.py", "line_number": 1,
+                "usage_type": "import", "symbol": "requests",
+                "code_snippet": "import requests",
+            },
+        ]
+        deps = [
+            {
+                "name": "requests",
+                "current_version": "2.28.0",
+                "latest_version": "2.31.0",
+                "project_path": "/tmp/myproject",
+                "changelog_url": "",
+                "repository_url": "",
+            },
+        ]
+        state = _make_parent_state(dependencies=deps, all_code_usages=usages)
+        result = fan_out_deps(state)
+
+        assert result[0].arg["all_code_usages"] == usages
 
     def test_fan_out_deps_passes_changelog_urls(self) -> None:
         from migratowl.core.analyzer import fan_out_deps
@@ -172,7 +254,7 @@ class TestFanOutDeps:
 
 class TestRagAnalyzeNode:
     @pytest.mark.asyncio
-    async def test_rag_analyze_node_low_confidence_routes_to_refine(self) -> None:
+    async def test_rag_analyze_node_low_confidence_routes_to_parse_code(self) -> None:
         from migratowl.core.analyzer import rag_analyze_node
 
         mock_rag_result = RAGQueryResult(
@@ -185,12 +267,12 @@ class TestRagAnalyzeNode:
             state = _make_dep_state(
                 changelog="some changelog text",
                 rag_confidence=0.3,
-                retry_count=0,
             )
             result = await rag_analyze_node(state)
 
         assert isinstance(result, Command)
-        assert result.goto == "refine_query"
+        assert result.goto == "parse_code"
+        assert result.update["rag_confidence"] == 0.3
 
     @pytest.mark.asyncio
     async def test_rag_analyze_node_high_confidence_routes_to_parse_code(self) -> None:
@@ -216,26 +298,6 @@ class TestRagAnalyzeNode:
         assert isinstance(result, Command)
         assert result.goto == "parse_code"
         assert "rag_results" in result.update
-
-    @pytest.mark.asyncio
-    async def test_rag_analyze_node_max_retries_routes_to_parse_code(self) -> None:
-        from migratowl.core.analyzer import rag_analyze_node
-
-        mock_rag_result = RAGQueryResult(
-            breaking_changes=[],
-            confidence=0.2,
-            source_chunks=[],
-        )
-
-        with patch("migratowl.core.analyzer.rag.query", new_callable=AsyncMock, return_value=mock_rag_result):
-            state = _make_dep_state(
-                changelog="some changelog text",
-                retry_count=3,
-            )
-            result = await rag_analyze_node(state)
-
-        assert isinstance(result, Command)
-        assert result.goto == "parse_code"
 
 
 # ---------------------------------------------------------------------------
@@ -727,24 +789,39 @@ class TestRagAnalyzeNodeErrorHandling:
 # ---------------------------------------------------------------------------
 
 
-class TestParseCodeNodeErrorHandling:
+class TestParseCodeNode:
     @pytest.mark.asyncio
-    async def test_parse_failure_continues_with_empty_usages_and_error(self) -> None:
-        """parse_code failure must continue to assess_impact with empty usages + error."""
+    async def test_filters_usages_from_state(self) -> None:
+        """parse_code_node filters all_code_usages for this dep, no I/O."""
         from migratowl.core.analyzer import parse_code_node
 
-        with patch(
-            "migratowl.core.analyzer.code_parser.find_usages",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("tree-sitter crash"),
-        ):
-            state = _make_dep_state()
-            result = await parse_code_node(state)
+        usages = [
+            CodeUsage(
+                file_path="a.py", line_number=1, usage_type="import",
+                symbol="requests", code_snippet="import requests",
+            ).model_dump(),
+            CodeUsage(
+                file_path="a.py", line_number=2, usage_type="import",
+                symbol="flask", code_snippet="from flask import Flask",
+            ).model_dump(),
+        ]
+        state = _make_dep_state(all_code_usages=usages)
+        result = await parse_code_node(state)
+
+        assert result.goto == "assess_impact"
+        assert len(result.update["code_usages"]) == 1
+        assert result.update["code_usages"][0]["symbol"] == "requests"
+
+    @pytest.mark.asyncio
+    async def test_empty_all_code_usages_yields_empty_code_usages(self) -> None:
+        """Empty all_code_usages yields empty code_usages (no error)."""
+        from migratowl.core.analyzer import parse_code_node
+
+        state = _make_dep_state(all_code_usages=[])
+        result = await parse_code_node(state)
 
         assert result.goto == "assess_impact"
         assert result.update["code_usages"] == []
-        assert "node_errors" in result.update
-        assert any("tree-sitter crash" in e or "parse" in e.lower() for e in result.update["node_errors"])
 
 
 # ---------------------------------------------------------------------------
@@ -1151,7 +1228,10 @@ class TestAnalyze:
             ),
             patch("migratowl.core.analyzer.rag.embed_changelog", new_callable=AsyncMock),
             patch("migratowl.core.analyzer.rag.query", new_callable=AsyncMock, return_value=mock_rag_result),
-            patch("migratowl.core.analyzer.code_parser.find_usages", new_callable=AsyncMock, return_value=mock_usages),
+            patch(
+                "migratowl.core.analyzer.code_parser.find_all_usages",
+                new_callable=AsyncMock, return_value=mock_usages,
+            ),
             patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_impact),
             patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=None),
             patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
@@ -1210,7 +1290,7 @@ class TestAnalyze:
             ),
             patch("migratowl.core.analyzer.rag.embed_changelog", new_callable=AsyncMock),
             patch("migratowl.core.analyzer.rag.query", new_callable=AsyncMock, return_value=mock_rag_result),
-            patch("migratowl.core.analyzer.code_parser.find_usages", new_callable=AsyncMock, return_value=[]),
+            patch("migratowl.core.analyzer.code_parser.find_all_usages", new_callable=AsyncMock, return_value=[]),
             patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_impact),
             patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=None),
             patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),
@@ -1291,7 +1371,7 @@ class TestAnalyze:
             ),
             patch("migratowl.core.analyzer.rag.embed_changelog", new_callable=AsyncMock),
             patch("migratowl.core.analyzer.rag.query", new_callable=AsyncMock, return_value=mock_rag_result),
-            patch("migratowl.core.analyzer.code_parser.find_usages", new_callable=AsyncMock, return_value=[]),
+            patch("migratowl.core.analyzer.code_parser.find_all_usages", new_callable=AsyncMock, return_value=[]),
             patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_impact),
             patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=None),
             patch("migratowl.core.analyzer.cache.set_cached_assessment", new_callable=AsyncMock),

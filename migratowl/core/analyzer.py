@@ -29,8 +29,6 @@ from migratowl.models.schemas import (
 
 logger = logging.getLogger(__name__)
 
-MAX_RAG_RETRIES = 3
-
 # Lazily initialised semaphore that caps the number of deps running through the
 # expensive pipeline (changelog fetch → embed → RAG → impact) concurrently.
 # Cache hits in check_cache_node bypass this entirely.
@@ -202,7 +200,7 @@ async def embed_changelog_node(state: DepAnalysisState) -> Command:
 
 
 async def rag_analyze_node(state: DepAnalysisState) -> Command:
-    """Query RAG for breaking changes; route based on confidence."""
+    """Query RAG for breaking changes."""
     query_text = (
         f"breaking changes in {state['dep_name']} between {state['current_version']} and {state['latest_version']}"
     )
@@ -219,15 +217,6 @@ async def rag_analyze_node(state: DepAnalysisState) -> Command:
 
     rag_results = [bc.model_dump() for bc in result.breaking_changes]
 
-    if result.confidence < settings.confidence_threshold and state["retry_count"] < MAX_RAG_RETRIES:
-        return Command(
-            goto="refine_query",
-            update={
-                "rag_results": rag_results,
-                "rag_confidence": result.confidence,
-            },
-        )
-
     return Command(
         goto="parse_code",
         update={
@@ -237,29 +226,13 @@ async def rag_analyze_node(state: DepAnalysisState) -> Command:
     )
 
 
-async def refine_query_node(state: DepAnalysisState) -> Command:
-    """Increment retry and loop back to rag_analyze."""
-    return Command(
-        goto="rag_analyze",
-        update={"retry_count": state["retry_count"] + 1},
-    )
-
-
 async def parse_code_node(state: DepAnalysisState) -> Command:
-    """Find code usages of the dependency in the project."""
-    try:
-        usages = await code_parser.find_usages(state["project_path"], state["dep_name"])
-    except Exception as exc:  # noqa: BLE001
-        warn_msg = f"Code parsing failed for {state['dep_name']}: {_clean_error_message(exc)}"
-        logger.warning(warn_msg)
-        logger.debug("Code parsing traceback for %s", state["dep_name"], exc_info=True)
-        return Command(
-            goto="assess_impact",
-            update={"code_usages": [], "node_errors": [warn_msg]},
-        )
+    """Filter pre-parsed code usages for this dependency."""
+    all_usages = [CodeUsage.model_validate(u) for u in state["all_code_usages"]]
+    filtered = code_parser.filter_usages_for_dep(all_usages, state["dep_name"])
     return Command(
         goto="assess_impact",
-        update={"code_usages": [u.model_dump() for u in usages]},
+        update={"code_usages": [u.model_dump() for u in filtered]},
     )
 
 
@@ -347,10 +320,21 @@ async def scan_dependencies_node(state: AnalysisState) -> Command:
         for od in outdated
     ]
 
-    update: dict = {"dependencies": dep_dicts}
+    update: dict = {"dependencies": dep_dicts, "total_dependencies": len(deps)}
     if registry_errors:
         update["errors"] = registry_errors
-    return Command(goto="fan_out", update=update)
+    return Command(goto="parse_all_code", update=update)
+
+
+async def parse_all_code_node(state: AnalysisState) -> Command:
+    """Parse all project source files once and store usages in state."""
+    try:
+        usages = await code_parser.find_all_usages(state["project_path"])
+    except Exception as exc:  # noqa: BLE001
+        warn_msg = f"Project code parsing failed: {_clean_error_message(exc)}"
+        logger.warning(warn_msg)
+        return Command(goto="fan_out", update={"all_code_usages": [], "errors": [warn_msg]})
+    return Command(goto="fan_out", update={"all_code_usages": [u.model_dump() for u in usages]})
 
 
 def fan_out_node(state: AnalysisState) -> None:
@@ -373,7 +357,7 @@ def fan_out_deps(state: AnalysisState) -> list[Send]:
                 "changelog": "",
                 "rag_results": [],
                 "rag_confidence": 0.0,
-                "retry_count": 0,
+                "all_code_usages": state["all_code_usages"],
                 "code_usages": [],
                 "impact_assessments": [],
                 "warnings": [],
@@ -415,6 +399,7 @@ async def generate_report_node(state: AnalysisState) -> Command:
         assessments=assessments,
         patches=patch_sets,
         errors=state["errors"],
+        total_dependencies=state["total_dependencies"],
     )
 
     json_str = report.export_json(analysis_report)
@@ -434,7 +419,6 @@ def _build_dep_worker_graph() -> StateGraph:
     builder.add_node("fetch_changelog", fetch_changelog_node)
     builder.add_node("embed_changelog", embed_changelog_node)
     builder.add_node("rag_analyze", rag_analyze_node)
-    builder.add_node("refine_query", refine_query_node)
     builder.add_node("parse_code", parse_code_node)
     builder.add_node("assess_impact", assess_impact_node)
 
@@ -456,6 +440,7 @@ def build_analysis_graph() -> Any:
     dep_worker = _build_dep_worker_compiled()
 
     builder.add_node("scan_dependencies", scan_dependencies_node)
+    builder.add_node("parse_all_code", parse_all_code_node)
     builder.add_node("fan_out", fan_out_node)
     builder.add_node("analyze_dep", dep_worker)
     builder.add_node("route_results", route_after_fan_in)
@@ -464,7 +449,8 @@ def build_analysis_graph() -> Any:
 
     builder.set_entry_point("scan_dependencies")
 
-    builder.add_edge("scan_dependencies", "fan_out")
+    builder.add_edge("scan_dependencies", "parse_all_code")
+    builder.add_edge("parse_all_code", "fan_out")
     builder.add_conditional_edges("fan_out", fan_out_deps, ["analyze_dep"])
     builder.add_edge("analyze_dep", "route_results")
 
@@ -504,7 +490,9 @@ async def analyze(project_path: str, fix_mode: bool = False) -> str:
     initial_state: AnalysisState = {
         "project_path": project_path,
         "fix_mode": fix_mode,
+        "total_dependencies": 0,
         "dependencies": [],
+        "all_code_usages": [],
         "impact_assessments": [],
         "patches": [],
         "report": "",
