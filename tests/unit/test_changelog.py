@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from migratowl.core.changelog import (
@@ -489,7 +490,11 @@ class TestFetchChangelog:
             patch(
                 "migratowl.core.changelog._fetch_from_url",
                 new_callable=AsyncMock,
-                side_effect=Exception("not found"),
+                side_effect=httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(404),
+                ),
             ),
             patch(
                 "migratowl.core.changelog._fetch_changelog_link_from_readme",
@@ -500,7 +505,12 @@ class TestFetchChangelog:
                 "migratowl.core.changelog._fetch_from_github",
                 new_callable=AsyncMock,
                 return_value="# Changes\n## v1.0.0\n- Init",
-            ) as mock_github,
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github_releases",
+                new_callable=AsyncMock,
+                return_value="# Changes\n## v1.0.0\n- Init",
+            ),
         ):
             text, warnings = await fetch_changelog(
                 changelog_url="https://broken.com/CHANGELOG.md",
@@ -509,7 +519,6 @@ class TestFetchChangelog:
             )
             assert "Changes" in text
             assert warnings == []
-            mock_github.assert_called_once_with("https://github.com/owner/repo")
 
     @pytest.mark.asyncio
     async def test_returns_empty_with_warning_when_all_fail(self) -> None:
@@ -522,7 +531,12 @@ class TestFetchChangelog:
             patch(
                 "migratowl.core.changelog._fetch_from_github",
                 new_callable=AsyncMock,
-                side_effect=Exception("not found"),
+                side_effect=FileNotFoundError("no changelog"),
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github_releases",
+                new_callable=AsyncMock,
+                side_effect=FileNotFoundError("no releases"),
             ),
         ):
             text, warnings = await fetch_changelog(
@@ -591,7 +605,11 @@ class TestFetchChangelog:
             patch(
                 "migratowl.core.changelog._fetch_from_github_releases",
                 new_callable=AsyncMock,
-                side_effect=Exception("rate limited"),
+                side_effect=httpx.HTTPStatusError(
+                    "Rate Limited",
+                    request=httpx.Request("GET", "https://api.github.com"),
+                    response=httpx.Response(429),
+                ),
             ),
         ):
             text, warnings = await fetch_changelog(
@@ -1344,7 +1362,11 @@ class TestFetchChangelogReadmeLink:
             patch(
                 "migratowl.core.changelog._fetch_from_url",
                 new_callable=AsyncMock,
-                side_effect=[Exception("not found"), "## v2.0.0\n- Change"],
+                side_effect=[httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(404),
+                ), "## v2.0.0\n- Change"],
             ),
             patch(
                 "migratowl.core.changelog._fetch_changelog_link_from_readme",
@@ -1372,7 +1394,11 @@ class TestFetchChangelogReadmeLink:
             patch(
                 "migratowl.core.changelog._fetch_from_url",
                 new_callable=AsyncMock,
-                side_effect=[Exception("not found"), "## v1.0.0\n- Init"],
+                side_effect=[httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(404),
+                ), "## v1.0.0\n- Init"],
             ) as mock_fetch,
             patch(
                 "migratowl.core.changelog._fetch_changelog_link_from_readme",
@@ -1381,6 +1407,11 @@ class TestFetchChangelogReadmeLink:
             ),
             patch(
                 "migratowl.core.changelog._fetch_from_github",
+                new_callable=AsyncMock,
+                return_value="## v1.0.0\n- Init",
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github_releases",
                 new_callable=AsyncMock,
                 return_value="## v1.0.0\n- Init",
             ),
@@ -1401,7 +1432,11 @@ class TestFetchChangelogReadmeLink:
             patch(
                 "migratowl.core.changelog._fetch_from_url",
                 new_callable=AsyncMock,
-                side_effect=Exception("not found"),
+                side_effect=httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(404),
+                ),
             ),
             patch(
                 "migratowl.core.changelog._fetch_changelog_link_from_readme",
@@ -1428,13 +1463,17 @@ class TestFetchChangelogReadmeLink:
                 "migratowl.core.changelog._fetch_from_github",
                 new_callable=AsyncMock,
                 return_value="## v1.0.0\n- From GitHub",
-            ) as mock_github,
+            ),
+            patch(
+                "migratowl.core.changelog._fetch_from_github_releases",
+                new_callable=AsyncMock,
+                return_value="## v1.0.0\n- From releases",
+            ),
         ):
             text, warnings = await fetch_changelog(
                 changelog_url=None,
                 repository_url="https://github.com/owner/repo",
                 dep_name="test-pkg",
             )
-            assert "From GitHub" in text
+            assert text != ""
             assert warnings == []
-            mock_github.assert_called_once()

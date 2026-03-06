@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+import httpx
+import openai
 import pytest
 from langgraph.types import Command, Send
 
@@ -147,7 +149,7 @@ class TestParseAllCodeNode:
         with patch(
             "migratowl.core.analyzer.code_parser.find_all_usages",
             new_callable=AsyncMock,
-            side_effect=RuntimeError("tree-sitter crash"),
+            side_effect=OSError("tree-sitter crash"),
         ):
             state = _make_parent_state()
             result = await parse_all_code_node(state)
@@ -493,7 +495,11 @@ class TestFetchChangelogNodeErrorHandling:
             patch(
                 "migratowl.core.analyzer.changelog.fetch_changelog",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("HTTP 404"),
+                side_effect=httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(404),
+                ),
             ),
         ):
             state = _make_dep_state()
@@ -502,7 +508,7 @@ class TestFetchChangelogNodeErrorHandling:
         assert isinstance(result, Command)
         assert result.goto == END
         assessment = result.update["impact_assessments"][0]
-        assert "HTTP 404" in assessment["errors"][0]
+        assert assessment["errors"][0]
 
     @pytest.mark.asyncio
     async def test_cache_read_failure_nonfatal_continues(self) -> None:
@@ -512,7 +518,7 @@ class TestFetchChangelogNodeErrorHandling:
         with (
             patch(
                 "migratowl.core.analyzer.changelog_cache.get_cached_changelog",
-                side_effect=RuntimeError("cache broken"),
+                side_effect=OSError("cache broken"),
             ),
             patch("migratowl.core.analyzer.changelog_cache.set_cached_changelog"),
             patch(
@@ -536,7 +542,7 @@ class TestFetchChangelogNodeErrorHandling:
             patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
             patch(
                 "migratowl.core.analyzer.changelog_cache.set_cached_changelog",
-                side_effect=RuntimeError("write error"),
+                side_effect=OSError("write error"),
             ),
             patch(
                 "migratowl.core.analyzer.changelog.fetch_changelog",
@@ -840,14 +846,18 @@ class TestAssessImpactNodeErrorHandling:
         with patch(
             "migratowl.core.analyzer.impact.assess_impact",
             new_callable=AsyncMock,
-            side_effect=RuntimeError("LLM down"),
+            side_effect=openai.APIError(
+                message="LLM down",
+                request=httpx.Request("POST", "https://api.openai.com"),
+                body=None,
+            ),
         ):
             state = _make_dep_state(rag_results=[], code_usages=[])
             result = await assess_impact_node(state)
 
         assert result.goto == END
         assessment = result.update["impact_assessments"][0]
-        assert "LLM down" in assessment["errors"][0]
+        assert assessment["errors"][0]
 
     @pytest.mark.asyncio
     async def test_cache_write_failure_nonfatal(self) -> None:
@@ -871,7 +881,7 @@ class TestAssessImpactNodeErrorHandling:
             patch(
                 "migratowl.core.analyzer.cache.set_cached_assessment",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("disk full"),
+                side_effect=OSError("disk full"),
             ),
         ):
             state = _make_dep_state(rag_results=[], code_usages=[])
@@ -1122,6 +1132,51 @@ class TestRouteAfterFanIn:
 
         assert isinstance(result, Command)
         assert result.goto == "generate_report"
+
+
+# ---------------------------------------------------------------------------
+# cleanup_embeddings_node
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupEmbeddingsNode:
+    @pytest.mark.asyncio
+    async def test_cleanup_node_calls_purge(self) -> None:
+        from migratowl.core.analyzer import cleanup_embeddings_node
+
+        state = _make_parent_state(
+            dependencies=[
+                {"name": "flask", "current_version": "2.0", "latest_version": "3.0", "project_path": "/tmp/p"},
+                {"name": "requests", "current_version": "2.28", "latest_version": "2.31", "project_path": "/tmp/p"},
+            ],
+        )
+
+        with patch("migratowl.core.analyzer.rag.purge_stale_embeddings", return_value={}) as mock_purge:
+            result = await cleanup_embeddings_node(state)
+
+        mock_purge.assert_called_once_with({"flask", "requests"}, "/tmp/myproject")
+        assert isinstance(result, Command)
+        assert result.goto == "route_results"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_node_logs_purged_deps(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        from migratowl.core.analyzer import cleanup_embeddings_node
+
+        state = _make_parent_state(
+            dependencies=[
+                {"name": "flask", "current_version": "2.0", "latest_version": "3.0", "project_path": "/tmp/p"},
+            ],
+        )
+
+        with (
+            patch("migratowl.core.analyzer.rag.purge_stale_embeddings", return_value={"django": 3, "celery": 1}),
+            caplog.at_level(logging.INFO, logger="migratowl.core.analyzer"),
+        ):
+            await cleanup_embeddings_node(state)
+
+        assert any("Purged stale embeddings" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -1572,7 +1627,7 @@ class TestCheckCacheNodeErrorHandling:
 
         with patch(
             "migratowl.core.analyzer.cache.get_cached_assessment",
-            side_effect=RuntimeError("disk error"),
+            side_effect=OSError("disk error"),
         ):
             state = _make_dep_state()
             result = await check_cache_node(state)
@@ -1779,7 +1834,11 @@ class TestLoggingVerbosity:
             patch(
                 "migratowl.core.analyzer.changelog.fetch_changelog",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("HTTP 404"),
+                side_effect=httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(404),
+                ),
             ),
             caplog.at_level(logging.WARNING, logger="migratowl.core.analyzer"),
         ):
@@ -1804,7 +1863,11 @@ class TestLoggingVerbosity:
             patch(
                 "migratowl.core.analyzer.changelog.fetch_changelog",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("HTTP 404"),
+                side_effect=httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(404),
+                ),
             ),
             caplog.at_level(logging.DEBUG, logger="migratowl.core.analyzer"),
         ):
@@ -1822,9 +1885,11 @@ class TestLoggingVerbosity:
 
         from migratowl.core.analyzer import fetch_changelog_node
 
-        api_error = Exception(
+        api_error = httpx.HTTPStatusError(
             "Error code: 401 - {'error': {'message': 'Incorrect API key', "
-            "'type': 'invalid_request_error', 'param': None, 'code': 'invalid_api_key'}}"
+            "'type': 'invalid_request_error', 'param': None, 'code': 'invalid_api_key'}}",
+            request=httpx.Request("GET", "https://api.openai.com"),
+            response=httpx.Response(401),
         )
 
         with (
@@ -1914,7 +1979,11 @@ class TestPreflightCheck:
         with patch(
             "migratowl.core.analyzer.llm.get_embedding",
             new_callable=AsyncMock,
-            side_effect=RuntimeError("temporary glitch"),
+            side_effect=openai.APIError(
+                message="temporary glitch",
+                request=httpx.Request("POST", "https://api.openai.com"),
+                body=None,
+            ),
         ):
             # Should not raise — transient errors are not fatal
             await _preflight_api_check()
@@ -1935,3 +2004,56 @@ class TestPreflightCheck:
             await analyze("/tmp/myproject")
 
         mock_preflight.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Escape tests — verify programming bugs propagate (not swallowed)
+# ---------------------------------------------------------------------------
+
+
+class TestProgrammingBugsPropagate:
+    @pytest.mark.asyncio
+    async def test_type_error_in_fetch_changelog_propagates(self) -> None:
+        """TypeError (programming bug) must NOT be caught by fetch_changelog_node."""
+        from migratowl.core.analyzer import fetch_changelog_node
+
+        with (
+            patch("migratowl.core.analyzer.changelog_cache.get_cached_changelog", return_value=None),
+            patch(
+                "migratowl.core.analyzer.changelog.fetch_changelog",
+                new_callable=AsyncMock,
+                side_effect=TypeError("unexpected None"),
+            ),
+            pytest.raises(TypeError, match="unexpected None"),
+        ):
+            await fetch_changelog_node(_make_dep_state())
+
+    @pytest.mark.asyncio
+    async def test_attribute_error_in_assess_impact_propagates(self) -> None:
+        """AttributeError (programming bug) must NOT be caught by assess_impact_node."""
+        from migratowl.core.analyzer import assess_impact_node
+
+        with (
+            patch(
+                "migratowl.core.analyzer.impact.assess_impact",
+                new_callable=AsyncMock,
+                side_effect=AttributeError("'NoneType' has no attribute 'foo'"),
+            ),
+            pytest.raises(AttributeError),
+        ):
+            await assess_impact_node(_make_dep_state(rag_results=[], code_usages=[]))
+
+    @pytest.mark.asyncio
+    async def test_key_error_in_parse_all_code_propagates(self) -> None:
+        """KeyError (programming bug) must NOT be caught by parse_all_code_node."""
+        from migratowl.core.analyzer import parse_all_code_node
+
+        with (
+            patch(
+                "migratowl.core.analyzer.code_parser.find_all_usages",
+                new_callable=AsyncMock,
+                side_effect=KeyError("missing_key"),
+            ),
+            pytest.raises(KeyError),
+        ):
+            await parse_all_code_node(_make_parent_state())

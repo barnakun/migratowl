@@ -4,6 +4,10 @@ import difflib
 import logging
 from pathlib import Path
 
+import httpx
+import openai
+from instructor.core import InstructorRetryException
+
 from migratowl.config import active_model, settings
 from migratowl.core.llm import get_client, get_llm_semaphore
 from migratowl.models.schemas import ImpactAssessment, PatchSet, PatchSuggestion
@@ -25,15 +29,18 @@ async def generate_patches(assessments: list[ImpactAssessment], project_path: st
         if assessment.impacts:
             try:
                 patch_set = await _generate_patch_for_dep(assessment, project_path)
-            except Exception:
+            except (
+                openai.APIError,
+                openai.APIConnectionError,
+                httpx.RequestError,
+                InstructorRetryException,
+            ):
                 logger.warning(
                     "Patch generation failed for %s, returning empty patch set",
                     assessment.dep_name,
                     exc_info=True,
                 )
-                patch_set = PatchSet(
-                    dep_name=assessment.dep_name, patches=[], unified_diff=""
-                )
+                patch_set = PatchSet(dep_name=assessment.dep_name, patches=[], unified_diff="")
             patches.append(patch_set)
     return patches
 
@@ -206,9 +213,7 @@ def _parse_file_line_ref(ref: str) -> tuple[str, int | None]:
     return (ref, None)
 
 
-def _read_code_context(
-    file_path: str, line: int, context_lines: int = 5, base_path: str = ""
-) -> str | None:
+def _read_code_context(file_path: str, line: int, context_lines: int = 5, base_path: str = "") -> str | None:
     """Read ±context_lines around a line number from a file on disk. Returns None if file missing."""
     path = Path(file_path)
     if not path.is_absolute() and base_path:

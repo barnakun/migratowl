@@ -15,6 +15,8 @@ _ollama_semaphore = asyncio.Semaphore(1)
 # are analysed concurrently. Configurable via MIGRATOWL_MAX_CONCURRENT_LLM_CALLS.
 # Lazily initialised so it reads settings at first use, not at import time.
 _llm_semaphore: asyncio.Semaphore | None = None
+_client: instructor.AsyncInstructor | None = None
+_raw_client: AsyncOpenAI | None = None
 
 
 def get_llm_semaphore() -> asyncio.Semaphore:
@@ -41,24 +43,38 @@ def _create_client() -> instructor.AsyncInstructor:
 
 
 def get_client() -> instructor.AsyncInstructor:
-    """Create a fresh client with API key validation."""
+    """Return a cached Instructor client, creating it on first call."""
+    global _client
     if not settings.use_local_llm and not settings.openai_api_key:
         msg = (
             "MIGRATOWL_OPENAI_API_KEY is required when not using local LLM. "
             "Set the env var or use MIGRATOWL_USE_LOCAL_LLM=true for Ollama."
         )
         raise ValueError(msg)
-    return _create_client()
+    if _client is None:
+        _client = _create_client()
+    return _client
 
 
 def _get_raw_openai_client() -> AsyncOpenAI:
-    """Get a raw AsyncOpenAI client for embeddings."""
-    if settings.use_local_llm:
-        return AsyncOpenAI(
-            base_url=settings.ollama_base_url,
-            api_key="ollama",
-        )
-    return AsyncOpenAI(api_key=settings.openai_api_key, max_retries=5)
+    """Return a cached raw AsyncOpenAI client for embeddings."""
+    global _raw_client
+    if _raw_client is None:
+        if settings.use_local_llm:
+            _raw_client = AsyncOpenAI(
+                base_url=settings.ollama_base_url,
+                api_key="ollama",
+            )
+        else:
+            _raw_client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=5)
+    return _raw_client
+
+
+def reset_clients() -> None:
+    """Clear cached clients so next call creates fresh instances."""
+    global _client, _raw_client
+    _client = None
+    _raw_client = None
 
 
 async def get_embedding(text: str) -> list[float]:

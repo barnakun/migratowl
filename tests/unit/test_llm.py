@@ -6,6 +6,18 @@ import pytest
 
 
 class TestClientCreation:
+    def setup_method(self) -> None:
+        import migratowl.core.llm as llm_module
+
+        llm_module._client = None
+        llm_module._raw_client = None
+
+    def teardown_method(self) -> None:
+        import migratowl.core.llm as llm_module
+
+        llm_module._client = None
+        llm_module._raw_client = None
+
     def test_get_client_returns_instructor_client(self) -> None:
         from migratowl.core.llm import get_client
 
@@ -36,6 +48,18 @@ class TestClientCreation:
 
 
 class TestOpenAIClientRetries:
+    def setup_method(self) -> None:
+        import migratowl.core.llm as llm_module
+
+        llm_module._client = None
+        llm_module._raw_client = None
+
+    def teardown_method(self) -> None:
+        import migratowl.core.llm as llm_module
+
+        llm_module._client = None
+        llm_module._raw_client = None
+
     def test_openai_client_has_retry_budget_for_rate_limits(self) -> None:
         """AsyncOpenAI clients must be created with max_retries > 2 to handle 429 TPM errors."""
         with patch("migratowl.core.llm.settings") as mock_settings:
@@ -203,6 +227,51 @@ class TestGetEmbeddingOpenAISemaphore:
 
         assert peak <= max_concurrent, f"Expected peak ≤ {max_concurrent}, got {peak}"
         llm_module._llm_semaphore = None  # cleanup
+
+
+class TestClientSingleton:
+    def setup_method(self) -> None:
+        import migratowl.core.llm as llm_module
+
+        llm_module._client = None
+        llm_module._raw_client = None
+
+    def teardown_method(self) -> None:
+        import migratowl.core.llm as llm_module
+
+        llm_module._client = None
+        llm_module._raw_client = None
+
+    def test_get_client_returns_same_instance(self) -> None:
+        from migratowl.core.llm import get_client
+
+        with patch("migratowl.core.llm.settings") as mock_settings:
+            mock_settings.use_local_llm = False
+            mock_settings.openai_api_key = "sk-test"
+            c1 = get_client()
+            c2 = get_client()
+            assert c1 is c2
+
+    def test_get_raw_client_returns_same_instance(self) -> None:
+        from migratowl.core.llm import _get_raw_openai_client
+
+        with patch("migratowl.core.llm.settings") as mock_settings:
+            mock_settings.use_local_llm = False
+            mock_settings.openai_api_key = "sk-test"
+            c1 = _get_raw_openai_client()
+            c2 = _get_raw_openai_client()
+            assert c1 is c2
+
+    def test_reset_clients_clears_singletons(self) -> None:
+        from migratowl.core.llm import get_client, reset_clients
+
+        with patch("migratowl.core.llm.settings") as mock_settings:
+            mock_settings.use_local_llm = False
+            mock_settings.openai_api_key = "sk-test"
+            c1 = get_client()
+            reset_clients()
+            c2 = get_client()
+            assert c1 is not c2
 
 
 class TestLLMSemaphore:

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import sys
 from typing import Any
 
+import httpx
+import openai
+from instructor.core import InstructorRetryException
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, Send
 from openai import APIConnectionError, AuthenticationError
@@ -111,7 +115,7 @@ async def check_cache_node(state: DepAnalysisState) -> Command:
             state["current_version"],
             state["latest_version"],
         )
-    except Exception:  # noqa: BLE001
+    except (json.JSONDecodeError, OSError, KeyError, TypeError):
         logger.warning("Cache read failed for %s, continuing without cache", state["dep_name"])
         logger.debug("Cache read traceback for %s", state["dep_name"], exc_info=True)
         return Command(goto="fetch_changelog", update={})
@@ -130,7 +134,7 @@ async def fetch_changelog_node(state: DepAnalysisState) -> Command:
         # Cache read is non-fatal
         try:
             cached = changelog_cache.get_cached_changelog(state["dep_name"])
-        except Exception:  # noqa: BLE001
+        except (json.JSONDecodeError, OSError, KeyError, TypeError):
             logger.warning("Changelog cache read failed for %s", state["dep_name"])
             logger.debug("Changelog cache read traceback for %s", state["dep_name"], exc_info=True)
             cached = None
@@ -144,7 +148,7 @@ async def fetch_changelog_node(state: DepAnalysisState) -> Command:
                     repository_url=state["repository_url"] or None,
                     dep_name=state["dep_name"],
                 )
-            except Exception as exc:  # noqa: BLE001
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError, FileNotFoundError) as exc:
                 error_msg = f"Changelog fetch failed for {state['dep_name']}: {_clean_error_message(exc)}"
                 logger.warning(error_msg)
                 logger.debug("Changelog fetch traceback for %s", state["dep_name"], exc_info=True)
@@ -156,7 +160,7 @@ async def fetch_changelog_node(state: DepAnalysisState) -> Command:
             # Cache write is non-fatal
             try:
                 changelog_cache.set_cached_changelog(state["dep_name"], text, warnings)
-            except Exception:  # noqa: BLE001
+            except (OSError, TypeError):
                 logger.warning("Changelog cache write failed for %s", state["dep_name"])
                 logger.debug("Changelog cache write traceback for %s", state["dep_name"], exc_info=True)
 
@@ -184,7 +188,7 @@ async def embed_changelog_node(state: DepAnalysisState) -> Command:
                 )
 
         await rag.embed_changelog(dep_name, chunks, state["project_path"])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001  # ChromaDB lacks stable exception types
         error_msg = f"Embed changelog failed for {state['dep_name']}: {_clean_error_message(exc)}"
         logger.warning(error_msg)
         logger.debug("Embed changelog traceback for %s", state["dep_name"], exc_info=True)
@@ -206,7 +210,7 @@ async def rag_analyze_node(state: DepAnalysisState) -> Command:
     )
     try:
         result = await rag.query(query_text, state["dep_name"], project_path=state["project_path"])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001  # ChromaDB lacks stable exception types
         warn_msg = f"RAG analysis failed for {state['dep_name']}: {_clean_error_message(exc)}"
         logger.warning(warn_msg)
         logger.debug("RAG analysis traceback for %s", state["dep_name"], exc_info=True)
@@ -253,7 +257,12 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
             breaking_changes=breaking_changes,
             code_usages=code_usages,
         )
-    except Exception as exc:  # noqa: BLE001
+    except (
+        openai.APIError,
+        openai.APIConnectionError,
+        httpx.RequestError,
+        InstructorRetryException,
+    ) as exc:
         error_msg = f"Impact assessment failed for {state['dep_name']}: {_clean_error_message(exc)}"
         logger.warning(error_msg)
         logger.debug("Impact assessment traceback for %s", state["dep_name"], exc_info=True)
@@ -275,11 +284,7 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
 
     # If warnings indicate incomplete data and no actual impacts found,
     # the "info" result is unreliable — mark as unknown
-    elif (
-        all_warnings
-        and not assessment_dict["impacts"]
-        and assessment_dict["overall_severity"] == Severity.INFO.value
-    ):
+    elif all_warnings and not assessment_dict["impacts"] and assessment_dict["overall_severity"] == Severity.INFO.value:
         assessment_dict["overall_severity"] = Severity.UNKNOWN.value
         assessment_dict["summary"] = "Could not be fully analyzed"
 
@@ -291,7 +296,7 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
             state["latest_version"],
             assessment_dict,
         )
-    except Exception:  # noqa: BLE001
+    except (OSError, TypeError):
         logger.warning("Cache write failed for %s", state["dep_name"])
         logger.debug("Cache write traceback for %s", state["dep_name"], exc_info=True)
 
@@ -330,7 +335,7 @@ async def parse_all_code_node(state: AnalysisState) -> Command:
     """Parse all project source files once and store usages in state."""
     try:
         usages = await code_parser.find_all_usages(state["project_path"])
-    except Exception as exc:  # noqa: BLE001
+    except (OSError, UnicodeDecodeError) as exc:
         warn_msg = f"Project code parsing failed: {_clean_error_message(exc)}"
         logger.warning(warn_msg)
         return Command(goto="fan_out", update={"all_code_usages": [], "errors": [warn_msg]})
@@ -366,6 +371,15 @@ def fan_out_deps(state: AnalysisState) -> list[Send]:
         )
         for dep in state["dependencies"]
     ]
+
+
+async def cleanup_embeddings_node(state: AnalysisState) -> Command:
+    """Remove stale ChromaDB embeddings for deps no longer in the project."""
+    active_deps = {d["name"] for d in state["dependencies"]}
+    purged = rag.purge_stale_embeddings(active_deps, state["project_path"])
+    if purged:
+        logger.info("Purged stale embeddings: %s", purged)
+    return Command(goto="route_results", update={})
 
 
 def route_after_fan_in(state: AnalysisState) -> Command:
@@ -443,6 +457,7 @@ def build_analysis_graph() -> Any:
     builder.add_node("parse_all_code", parse_all_code_node)
     builder.add_node("fan_out", fan_out_node)
     builder.add_node("analyze_dep", dep_worker)
+    builder.add_node("cleanup_embeddings", cleanup_embeddings_node)
     builder.add_node("route_results", route_after_fan_in)
     builder.add_node("generate_patches", generate_patches_node)
     builder.add_node("generate_report", generate_report_node)
@@ -452,7 +467,8 @@ def build_analysis_graph() -> Any:
     builder.add_edge("scan_dependencies", "parse_all_code")
     builder.add_edge("parse_all_code", "fan_out")
     builder.add_conditional_edges("fan_out", fan_out_deps, ["analyze_dep"])
-    builder.add_edge("analyze_dep", "route_results")
+    builder.add_edge("analyze_dep", "cleanup_embeddings")
+    builder.add_edge("cleanup_embeddings", "route_results")
 
     builder.add_edge("generate_patches", "generate_report")
     builder.add_edge("generate_report", END)
@@ -477,7 +493,7 @@ async def _preflight_api_check() -> None:
     except APIConnectionError:
         logger.error("Cannot connect to OpenAI API — check your network or MIGRATOWL_OPENAI_API_KEY")
         sys.exit(1)
-    except Exception:  # noqa: BLE001
+    except (openai.APIError, httpx.RequestError):
         # Transient errors (rate limit, server error) — don't block analysis
         logger.debug("Pre-flight API check failed with transient error, continuing", exc_info=True)
 

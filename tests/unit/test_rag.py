@@ -571,3 +571,340 @@ class TestQueryLLMSemaphore:
 
         mock_sem.__aenter__.assert_called_once()
         mock_sem.__aexit__.assert_called_once()
+
+
+class TestVerifyBreakingChanges:
+    def test_verified_when_api_name_in_source(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        changes = [
+            BreakingChange(
+                api_name="old_func", change_type=ChangeType.REMOVED, description="Removed", migration_hint="Use new"
+            )
+        ]
+        result, ratio = verify_breaking_changes(changes, ["REMOVED old_func in v2"])
+        assert result[0].verified is True
+        assert ratio == 1.0
+
+    def test_unverified_when_api_name_not_in_source(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        changes = [
+            BreakingChange(
+                api_name="ghost_func", change_type=ChangeType.REMOVED, description="Gone", migration_hint="N/A"
+            )
+        ]
+        result, ratio = verify_breaking_changes(changes, ["Nothing relevant here"])
+        assert result[0].verified is False
+        assert ratio == 0.0
+
+    def test_dotted_name_any_part_matches(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        changes = [
+            BreakingChange(
+                api_name="SomeClass.do_thing",
+                change_type=ChangeType.BEHAVIOR_CHANGED,
+                description="Changed",
+                migration_hint="Update",
+            )
+        ]
+        result, ratio = verify_breaking_changes(changes, ["SomeClass.do_thing was removed"])
+        assert result[0].verified is True
+
+    def test_dotted_name_partial_match_sufficient(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        changes = [
+            BreakingChange(
+                api_name="SomeClass.obscure",
+                change_type=ChangeType.REMOVED,
+                description="Removed",
+                migration_hint="N/A",
+            )
+        ]
+        result, ratio = verify_breaking_changes(changes, ["SomeClass was refactored"])
+        assert result[0].verified is True
+
+    def test_case_insensitive(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        changes = [
+            BreakingChange(
+                api_name="Old_Func", change_type=ChangeType.REMOVED, description="Removed", migration_hint="N/A"
+            )
+        ]
+        result, ratio = verify_breaking_changes(changes, ["REMOVED old_func in v2"])
+        assert result[0].verified is True
+
+    def test_mixed_verified_and_unverified(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        changes = [
+            BreakingChange(
+                api_name="real_func", change_type=ChangeType.REMOVED, description="Removed", migration_hint="N/A"
+            ),
+            BreakingChange(
+                api_name="ghost_func", change_type=ChangeType.REMOVED, description="Gone", migration_hint="N/A"
+            ),
+        ]
+        result, ratio = verify_breaking_changes(changes, ["real_func was removed"])
+        assert result[0].verified is True
+        assert result[1].verified is False
+        assert ratio == 0.5
+
+    def test_empty_breaking_changes(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        result, ratio = verify_breaking_changes([], ["some text"])
+        assert result == []
+        assert ratio == 1.0
+
+    def test_short_name_parts_skipped(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        changes = [
+            BreakingChange(
+                api_name="X.do_thing",
+                change_type=ChangeType.REMOVED,
+                description="Removed",
+                migration_hint="N/A",
+            )
+        ]
+        # "X" is too short (<3 chars), but "do_thing" matches
+        result, ratio = verify_breaking_changes(changes, ["do_thing was removed"])
+        assert result[0].verified is True
+
+    def test_parentheses_stripped(self) -> None:
+        from migratowl.core.rag import verify_breaking_changes
+
+        changes = [
+            BreakingChange(
+                api_name="some_func()",
+                change_type=ChangeType.REMOVED,
+                description="Removed",
+                migration_hint="N/A",
+            )
+        ]
+        result, ratio = verify_breaking_changes(changes, ["some_func was removed"])
+        assert result[0].verified is True
+
+
+class TestPurgeDepEmbeddings:
+    def test_deletes_all_docs_for_dep(self) -> None:
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {"ids": ["flask:1.0.0:0", "flask:2.0.0:0"]}
+
+        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+            from migratowl.core.rag import purge_dep_embeddings
+
+            count = purge_dep_embeddings("flask")
+
+        mock_collection.get.assert_called_once_with(where={"dep_name": "flask"})
+        mock_collection.delete.assert_called_once_with(ids=["flask:1.0.0:0", "flask:2.0.0:0"])
+        assert count == 2
+
+    def test_noop_when_dep_has_no_docs(self) -> None:
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {"ids": []}
+
+        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+            from migratowl.core.rag import purge_dep_embeddings
+
+            count = purge_dep_embeddings("nonexistent")
+
+        mock_collection.delete.assert_not_called()
+        assert count == 0
+
+    def test_returns_deleted_count(self) -> None:
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {"ids": ["a:1:0", "a:2:0", "a:3:0"]}
+
+        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+            from migratowl.core.rag import purge_dep_embeddings
+
+            count = purge_dep_embeddings("a", project_path="/tmp/proj")
+
+        assert count == 3
+
+
+class TestPurgeStalEmbeddings:
+    def test_removes_orphaned_deps(self) -> None:
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {
+            "ids": ["flask:1:0", "requests:1:0", "django:1:0", "django:2:0", "django:3:0"],
+            "metadatas": [
+                {"dep_name": "flask"},
+                {"dep_name": "requests"},
+                {"dep_name": "django"},
+                {"dep_name": "django"},
+                {"dep_name": "django"},
+            ],
+        }
+
+        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+            from migratowl.core.rag import purge_stale_embeddings
+
+            # purge_dep_embeddings will also call get_collection, so we need to
+            # mock it at a higher level
+            with patch("migratowl.core.rag.purge_dep_embeddings", return_value=3) as mock_purge_dep:
+                purged = purge_stale_embeddings({"flask", "requests"})
+
+        mock_purge_dep.assert_called_once_with("django", "")
+        assert purged == {"django": 3}
+
+    def test_keeps_all_when_no_orphans(self) -> None:
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {
+            "ids": ["flask:1:0", "requests:1:0"],
+            "metadatas": [
+                {"dep_name": "flask"},
+                {"dep_name": "requests"},
+            ],
+        }
+
+        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+            from migratowl.core.rag import purge_stale_embeddings
+
+            with patch("migratowl.core.rag.purge_dep_embeddings") as mock_purge_dep:
+                purged = purge_stale_embeddings({"flask", "requests"})
+
+        mock_purge_dep.assert_not_called()
+        assert purged == {}
+
+    def test_handles_empty_collection(self) -> None:
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {"ids": [], "metadatas": []}
+
+        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+            from migratowl.core.rag import purge_stale_embeddings
+
+            purged = purge_stale_embeddings({"flask"})
+
+        assert purged == {}
+
+    def test_returns_purged_counts(self) -> None:
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {
+            "ids": ["flask:1:0", "django:1:0", "django:2:0", "django:3:0", "celery:1:0"],
+            "metadatas": [
+                {"dep_name": "flask"},
+                {"dep_name": "django"},
+                {"dep_name": "django"},
+                {"dep_name": "django"},
+                {"dep_name": "celery"},
+            ],
+        }
+
+        def fake_purge(dep_name: str, project_path: str = "") -> int:
+            counts = {"django": 3, "celery": 1}
+            return counts.get(dep_name, 0)
+
+        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+            from migratowl.core.rag import purge_stale_embeddings
+
+            with patch("migratowl.core.rag.purge_dep_embeddings", side_effect=fake_purge):
+                purged = purge_stale_embeddings({"flask"})
+
+        assert purged == {"django": 3, "celery": 1}
+
+
+class TestVerificationConfidenceAdjustment:
+    def test_confidence_unchanged_all_verified(self) -> None:
+        """confidence * (1 - 0.5 * (1 - 1.0)) = confidence"""
+        ratio = 1.0
+        confidence = 0.9
+        adjusted = confidence * (1 - 0.5 * (1 - ratio))
+        assert adjusted == pytest.approx(0.9)
+
+    def test_confidence_halved_none_verified(self) -> None:
+        """confidence * (1 - 0.5 * (1 - 0.0)) = confidence * 0.5"""
+        ratio = 0.0
+        confidence = 0.8
+        adjusted = confidence * (1 - 0.5 * (1 - ratio))
+        assert adjusted == pytest.approx(0.4)
+
+    def test_confidence_partial(self) -> None:
+        """confidence * (1 - 0.5 * (1 - 0.5)) = confidence * 0.75"""
+        ratio = 0.5
+        confidence = 0.8
+        adjusted = confidence * (1 - 0.5 * (1 - ratio))
+        assert adjusted == pytest.approx(0.6)
+
+
+class TestQueryVerification:
+    @pytest.mark.asyncio
+    async def test_query_calls_verify_and_adjusts_confidence(self) -> None:
+        """query() must call verify_breaking_changes with LLM results and source chunks."""
+        mock_collection = MagicMock()
+        raw_docs = ["Breaking: removed old_func", "Changed API"]
+        mock_collection.query.return_value = {
+            "documents": [raw_docs],
+            "distances": [[0.1, 0.2]],
+            "metadatas": [[{"dep_name": "requests", "version": "2.0.0"}, {"dep_name": "requests", "version": "3.0.0"}]],
+        }
+
+        bc = BreakingChange(
+            api_name="old_func", change_type=ChangeType.REMOVED, description="Removed", migration_hint="Use new"
+        )
+        mock_analysis = ChangelogAnalysis(breaking_changes=[bc], deprecations=[], new_features=[], confidence=0.9)
+        mock_instructor_client = MagicMock()
+        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+
+        verified_bc = bc.model_copy(update={"verified": True})
+
+        with (
+            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
+            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
+            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch(
+                "migratowl.core.rag.verify_breaking_changes", return_value=([verified_bc], 1.0)
+            ) as mock_verify,
+        ):
+            from migratowl.core.rag import query
+
+            result = await query("breaking changes in requests", "requests")
+
+        mock_verify.assert_called_once_with(mock_analysis.breaking_changes, raw_docs)
+        assert result.confidence == pytest.approx(0.9)
+        assert result.breaking_changes[0].verified is True
+
+    @pytest.mark.asyncio
+    async def test_query_verifies_against_raw_chunks_not_summary(self) -> None:
+        """When summarization triggers, verification must use raw documents, not the summary."""
+        from migratowl.config import settings
+
+        large_doc = "x" * (settings.summarize_threshold + 1)
+        raw_docs = [large_doc]
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [raw_docs],
+            "distances": [[0.1]],
+            "metadatas": [[{"dep_name": "flask", "version": "3.0.0"}]],
+        }
+
+        bc = BreakingChange(
+            api_name="old_func", change_type=ChangeType.REMOVED, description="Removed", migration_hint="Use new"
+        )
+        mock_analysis = ChangelogAnalysis(breaking_changes=[bc], deprecations=[], new_features=[], confidence=0.8)
+        mock_instructor_client = MagicMock()
+        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+
+        verified_bc = bc.model_copy(update={"verified": False})
+
+        with (
+            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
+            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
+            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag._summarize_changelog", new_callable=AsyncMock, return_value="concise summary"),
+            patch(
+                "migratowl.core.rag.verify_breaking_changes", return_value=([verified_bc], 0.0)
+            ) as mock_verify,
+        ):
+            from migratowl.core.rag import query
+
+            result = await query("breaking changes", "flask", n_results=3)
+
+        # Verification must receive the raw documents, NOT "concise summary"
+        mock_verify.assert_called_once_with(mock_analysis.breaking_changes, raw_docs)
+        assert result.confidence == pytest.approx(0.4)

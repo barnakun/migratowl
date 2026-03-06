@@ -67,6 +67,7 @@ class BreakingChange(BaseModel):
     change_type: ChangeType = Field(description="Type of breaking change")
     description: str = Field(description="What changed and why")
     migration_hint: str = Field(description="How to update affected code")
+    verified: bool = Field(default=True, description="Whether this change was found in source changelog text")
 
     @field_validator("change_type", mode="before")
     @classmethod

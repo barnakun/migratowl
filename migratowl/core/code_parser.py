@@ -268,7 +268,7 @@ async def find_all_usages(project_path: str | Path) -> list[CodeUsage]:
             try:
                 file_usages = await parse_file(file_path, language)
                 all_usages.extend(file_usages)
-            except Exception as exc:  # noqa: BLE001
+            except (OSError, UnicodeDecodeError) as exc:
                 logger.warning("Failed to parse %s: %s", file_path, exc, exc_info=True)
                 continue
 

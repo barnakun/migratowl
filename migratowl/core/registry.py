@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 
+import httpx
 from packaging.version import InvalidVersion, Version
 
 from migratowl.config import settings
@@ -151,7 +152,7 @@ async def find_outdated(deps: list[Dependency]) -> tuple[list[OutdatedDependency
         async with sem:
             try:
                 info = await query_registry(dep.name, dep.ecosystem)
-            except Exception as exc:
+            except (httpx.HTTPStatusError, httpx.RequestError, KeyError, ValueError) as exc:
                 msg = f"Registry query failed for {dep.name}: {exc}"
                 logger.warning(msg)
                 errors.append(msg)

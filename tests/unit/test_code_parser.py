@@ -315,7 +315,7 @@ class TestLoggingAndValidation:
 
         with unittest.mock.patch(
             "migratowl.core.code_parser.parse_file",
-            side_effect=RuntimeError("parse error"),
+            side_effect=OSError("parse error"),
         ):
             with caplog.at_level(logging.WARNING, logger="migratowl.core.code_parser"):
                 await find_usages(proj, "requests")
@@ -337,7 +337,7 @@ class TestLoggingAndValidation:
         async def mock_parse(fp: Path, lang: str) -> list[CodeUsage]:
             parse_calls.append(fp)
             if len(parse_calls) == 1:
-                raise RuntimeError("simulated failure")
+                raise UnicodeDecodeError("utf-8", b"", 0, 1, "simulated failure")
             return await original(fp, lang)
 
         with unittest.mock.patch("migratowl.core.code_parser.parse_file", new=mock_parse):

@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import TYPE_CHECKING
 
 import html2text as _html2text
+import httpx
 from packaging.version import InvalidVersion, Version
 
 from migratowl.config import settings
 from migratowl.core.http import get_http_client
-
-if TYPE_CHECKING:
-    import httpx
 
 
 async def fetch_changelog(
@@ -32,7 +29,7 @@ async def fetch_changelog(
     if changelog_url:
         try:
             return await _fetch_from_url(changelog_url), []
-        except Exception:
+        except (httpx.HTTPStatusError, httpx.RequestError, ValueError, FileNotFoundError):
             pass
 
     # Step 2: extract changelog link from README.
@@ -41,7 +38,7 @@ async def fetch_changelog(
         if readme_link and readme_link != changelog_url:
             try:
                 return await _fetch_from_url(readme_link), []
-            except Exception:
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError, FileNotFoundError):
                 pass
 
     if repository_url:
@@ -55,7 +52,7 @@ async def fetch_changelog(
         for strategy in ordered:
             try:
                 return await strategy(repository_url), []
-            except Exception:
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError, FileNotFoundError):
                 pass
 
     return "", [f"Could not fetch changelog for {dep_name}"]
@@ -168,7 +165,7 @@ async def _fetch_changelog_link_from_readme(repository_url: str) -> str | None:
             link = _extract_changelog_link(r.text)
             if link:
                 return link
-        except Exception:
+        except (httpx.HTTPStatusError, httpx.RequestError):
             continue
 
     return None
@@ -224,7 +221,7 @@ async def _try_urls_concurrently(
                 r = await client.get(url)
                 if r.status_code == 200 and chunk_changelog_by_version(r.text):
                     return r.text
-            except Exception:
+            except (httpx.HTTPStatusError, httpx.RequestError):
                 pass
             return None
 
@@ -286,9 +283,9 @@ async def _fetch_from_github(repository_url: str) -> str:
                         r2 = await client.get(raw_url)
                         if r2.status_code == 200 and chunk_changelog_by_version(r2.text):
                             return r2.text
-                    except Exception:
+                    except (httpx.HTTPStatusError, httpx.RequestError):
                         pass
-            except Exception:
+            except (httpx.HTTPStatusError, httpx.RequestError):
                 continue
 
     raise FileNotFoundError(f"No changelog found for {owner}/{repo}")
