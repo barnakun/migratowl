@@ -22,11 +22,9 @@ class TestGetCollection:
 
         with (
             patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
+            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
-            mock_settings.use_local_llm = False
-            mock_settings.embedding_model = "text-embedding-3-small"
-            mock_settings.local_embedding_model = "nomic-embed-text"
             mock_settings.vectorstore_path = "/tmp/vs"
 
             from migratowl.core.rag import get_collection
@@ -51,12 +49,10 @@ class TestGetCollection:
 
         with (
             patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
+            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/vs"
-            mock_settings.use_local_llm = False
-            mock_settings.embedding_model = "text-embedding-3-small"
-            mock_settings.local_embedding_model = "nomic-embed-text"
             get_collection()
             openai_name = mock_client.get_or_create_collection.call_args.args[0]
 
@@ -64,12 +60,10 @@ class TestGetCollection:
 
         with (
             patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
+            patch("migratowl.core.rag.active_embedding_model", return_value="nomic-embed-text"),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/vs"
-            mock_settings.use_local_llm = True
-            mock_settings.embedding_model = "text-embedding-3-small"
-            mock_settings.local_embedding_model = "nomic-embed-text"
             get_collection()
             ollama_name = mock_client.get_or_create_collection.call_args.args[0]
 
@@ -86,12 +80,10 @@ class TestGetCollection:
 
         with (
             patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
+            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/vs"
-            mock_settings.use_local_llm = False
-            mock_settings.embedding_model = "text-embedding-3-small"
-            mock_settings.local_embedding_model = "nomic-embed-text"
 
             get_collection(project_path="/projects/app-a")
             name_a = mock_client.get_or_create_collection.call_args.args[0]
@@ -113,12 +105,10 @@ class TestGetCollection:
 
         with (
             patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
+            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/vs"
-            mock_settings.use_local_llm = False
-            mock_settings.embedding_model = "text-embedding-3-small"
-            mock_settings.local_embedding_model = "nomic-embed-text"
 
             get_collection(project_path="/projects/my-app")
             name_1 = mock_client.get_or_create_collection.call_args.args[0]
@@ -137,6 +127,7 @@ class TestGetCollection:
 
         with (
             patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
+            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/test_vectorstore"

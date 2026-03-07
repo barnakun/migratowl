@@ -27,7 +27,12 @@ def _make_report_json(project_path: str = "/tmp/project") -> str:
 
 def _fake_settings(**overrides):
     """Create a fake settings object with sensible defaults for CLI tests."""
-    defaults = {"use_local_llm": False, "openai_api_key": "sk-test", "openai_model": "gpt-4o-mini"}
+    defaults = {
+        "use_local_llm": False,
+        "openai_api_key": "sk-test",
+        "openai_model": "gpt-4o-mini",
+        "log_level": "WARNING",
+    }
     defaults.update(overrides)
     return type("S", (), defaults)()
 
@@ -165,9 +170,7 @@ class TestFormatFlag:
             new_callable=AsyncMock,
             return_value=_make_report_json(str(project_dir)),
         ):
-            result = runner.invoke(
-                app, ["analyze", str(project_dir), "--output", str(output_base), "--format", "json"]
-            )
+            result = runner.invoke(app, ["analyze", str(project_dir), "--output", str(output_base), "--format", "json"])
 
             assert result.exit_code == 0
             expected_file = tmp_path / "report.json"
@@ -209,9 +212,7 @@ class TestFormatFlag:
             new_callable=AsyncMock,
             return_value=_make_report_json(str(project_dir)),
         ):
-            result = runner.invoke(
-                app, ["analyze", str(project_dir), "--output", str(output_file), "--format", "json"]
-            )
+            result = runner.invoke(app, ["analyze", str(project_dir), "--output", str(output_file), "--format", "json"])
 
             assert result.exit_code == 0
             assert output_file.exists()
@@ -266,9 +267,7 @@ class TestFormatFlag:
             new_callable=AsyncMock,
             return_value=_make_report_json(str(project_dir)),
         ):
-            result = runner.invoke(
-                app, ["analyze", str(project_dir), "--output", str(tmp_path / "report.gdfs")]
-            )
+            result = runner.invoke(app, ["analyze", str(project_dir), "--output", str(tmp_path / "report.gdfs")])
 
             assert result.exit_code == 1
             assert "extension" in result.output.lower()
@@ -337,7 +336,8 @@ class TestApiKeyValidation:
         project_dir.mkdir()
 
         monkeypatch.setattr(
-            "migratowl.interfaces.cli.settings", type("S", (), {"use_local_llm": False, "openai_api_key": ""})()
+            "migratowl.interfaces.cli.settings",
+            type("S", (), {"use_local_llm": False, "openai_api_key": "", "log_level": "WARNING"})(),
         )
 
         result = runner.invoke(app, ["analyze", str(project_dir)])
@@ -351,7 +351,16 @@ class TestApiKeyValidation:
 
         monkeypatch.setattr(
             "migratowl.interfaces.cli.settings",
-            type("S", (), {"use_local_llm": True, "openai_api_key": "", "openai_model": "llama3.2"})(),
+            type(
+                "S",
+                (),
+                {
+                    "use_local_llm": True,
+                    "openai_api_key": "",
+                    "openai_model": "llama3.2",
+                    "log_level": "WARNING",
+                },
+            )(),
         )
 
         with patch(

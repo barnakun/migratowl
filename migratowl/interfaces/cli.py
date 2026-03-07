@@ -2,16 +2,35 @@
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import typer
 from rich.console import Console
+from rich.logging import RichHandler
 
 from migratowl.config import settings
 
 app = typer.Typer(name="migratowl", help="AI-powered dependency migration analyzer")
 console = Console()
+
+
+def configure_logging(verbosity: int = 0) -> None:
+    """Configure root logger with Rich handler."""
+    if verbosity >= 2:
+        level = "DEBUG"
+    elif verbosity == 1:
+        level = "INFO"
+    else:
+        level = settings.log_level.upper()
+
+    logging.basicConfig(
+        level=getattr(logging, level, logging.WARNING),
+        format="%(message)s",
+        handlers=[RichHandler(console=console, show_time=False, show_path=False, markup=True)],
+        force=True,
+    )
 
 
 # Lazy import to allow mocking in tests
@@ -33,24 +52,18 @@ _FORMAT_TO_EXTENSION = {"json": ".json", "markdown": ".md"}
 def _resolve_output_format(output: str, format_flag: str | None) -> tuple[str, str]:
     """Resolve output path and format from --output extension and --format flag."""
     if format_flag is not None and format_flag not in _VALID_FORMATS:
-        raise typer.BadParameter(
-            f"Invalid format '{format_flag}'. Must be one of: {', '.join(sorted(_VALID_FORMATS))}"
-        )
+        raise typer.BadParameter(f"Invalid format '{format_flag}'. Must be one of: {', '.join(sorted(_VALID_FORMATS))}")
 
     ext = Path(output).suffix.lower()
     ext_format = _EXTENSION_TO_FORMAT.get(ext)
 
     if ext_format:
         if format_flag is not None and format_flag != ext_format:
-            raise typer.BadParameter(
-                f"Output extension '{ext}' conflicts with --format '{format_flag}'"
-            )
+            raise typer.BadParameter(f"Output extension '{ext}' conflicts with --format '{format_flag}'")
         return output, ext_format
 
     if ext:
-        raise typer.BadParameter(
-            f"Unrecognized output extension '{ext}'. Use .json or .md, or omit the extension"
-        )
+        raise typer.BadParameter(f"Unrecognized output extension '{ext}'. Use .json or .md, or omit the extension")
 
     resolved_format = format_flag if format_flag is not None else "json"
     resolved_path = output + _FORMAT_TO_EXTENSION[resolved_format]
@@ -75,7 +88,37 @@ _ENV_TEMPLATE = """\
 
 # Vectorstore path (default: .migratowl/vectorstore)
 # MIGRATOWL_VECTORSTORE_PATH=.migratowl/vectorstore
+
+# Log level (default: WARNING, use INFO or DEBUG for more output)
+# MIGRATOWL_LOG_LEVEL=WARNING
 """
+
+
+def _render_or_write_report(result: str, output: str | None, format: str | None) -> None:
+    """Write report to file or render to console."""
+    if output:
+        try:
+            resolved_path, resolved_format = _resolve_output_format(output, format)
+        except typer.BadParameter as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1) from e
+
+        if resolved_format == "markdown":
+            from migratowl.core.report import export_markdown
+            from migratowl.models.schemas import AnalysisReport
+
+            report = AnalysisReport.model_validate(json.loads(result))
+            Path(resolved_path).write_text(export_markdown(report))
+        else:
+            Path(resolved_path).write_text(result)
+        console.print(f"Report written to {resolved_path}")
+    else:
+        from migratowl.core.report import render_report
+        from migratowl.models.schemas import AnalysisReport
+
+        report_data = json.loads(result)
+        report = AnalysisReport.model_validate(report_data)
+        render_report(report, console=console)
 
 
 @app.command()
@@ -87,8 +130,13 @@ def analyze(
     model: str | None = typer.Option(None, "--model", "-m", help="Override the LLM model"),
     format: str | None = typer.Option(None, "--format", "-f", help="Output format: json or markdown"),
     ignore: str | None = typer.Option(None, "--ignore", "-i", help="Comma-separated dependencies to skip"),
+    verbose: int = typer.Option(
+        0, "--verbose", "-v", count=True, help="Increase verbosity (-v for INFO, -vv for DEBUG)"
+    ),
 ) -> None:
     """Analyze project dependencies for breaking changes."""
+    configure_logging(verbose)
+
     path = Path(project_path)
     if not path.exists():
         console.print(f"[red]Error: Path '{project_path}' does not exist[/red]")
@@ -119,30 +167,7 @@ def analyze(
             await close_http_client()
 
     result = asyncio.run(_run())
-
-    if output:
-        try:
-            resolved_path, resolved_format = _resolve_output_format(output, format)
-        except typer.BadParameter as e:
-            console.print(f"[red]Error: {e}[/red]")
-            raise typer.Exit(code=1) from e
-
-        if resolved_format == "markdown":
-            from migratowl.core.report import export_markdown
-            from migratowl.models.schemas import AnalysisReport
-
-            report = AnalysisReport.model_validate(json.loads(result))
-            Path(resolved_path).write_text(export_markdown(report))
-        else:
-            Path(resolved_path).write_text(result)
-        console.print(f"Report written to {resolved_path}")
-    else:
-        from migratowl.core.report import render_report
-        from migratowl.models.schemas import AnalysisReport
-
-        report_data = json.loads(result)
-        report = AnalysisReport.model_validate(report_data)
-        render_report(report, console=console)
+    _render_or_write_report(result, output, format)
 
 
 @app.command()
@@ -160,6 +185,8 @@ def init() -> None:
 @app.command()
 def serve() -> None:
     """Start the MCP server."""
+    configure_logging()
+
     from migratowl.interfaces.mcp_server import mcp
 
     mcp.run()

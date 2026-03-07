@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     http_retry_count: int = 3
     http_retry_backoff_base: float = 0.5
     ignored_dependencies: str = ""
+    log_level: str = "WARNING"
 
     @property
     def parsed_ignored_dependencies(self) -> list[str]:
@@ -48,3 +49,8 @@ settings = Settings()
 def active_model() -> str:
     """Return the model name to use for completions based on current config."""
     return settings.local_llm_model if settings.use_local_llm else settings.openai_model
+
+
+def active_embedding_model() -> str:
+    """Return the embedding model name based on current config."""
+    return settings.local_embedding_model if settings.use_local_llm else settings.embedding_model

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from migratowl.config import active_model, settings
+from migratowl.config import active_embedding_model, active_model, settings
 from migratowl.core.llm import get_client, get_embedding, get_llm_semaphore
 from migratowl.models.schemas import BreakingChange, ChangelogAnalysis, ChangelogSummary, RAGQueryResult
 
@@ -33,7 +33,7 @@ def get_collection(project_path: str = "") -> Any:
     """
     _chromadb = _import_chromadb()
     client = _chromadb.PersistentClient(path=settings.vectorstore_path)
-    model = settings.local_embedding_model if settings.use_local_llm else settings.embedding_model
+    model = active_embedding_model()
     safe_model = model.replace("/", "_").replace("-", "_").replace(".", "_")
     project_hash = hashlib.sha256(project_path.encode()).hexdigest()[:8]
     return client.get_or_create_collection(

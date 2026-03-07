@@ -38,6 +38,7 @@ def _normalize_dep_name(name: str) -> str:
     """Normalize dependency name: lowercase and replace hyphens with underscores."""
     return name.lower().replace("-", "_")
 
+
 # Lazily initialised semaphore that caps the number of deps running through the
 # expensive pipeline (changelog fetch → embed → RAG → impact) concurrently.
 # Cache hits in check_cache_node bypass this entirely.
@@ -114,7 +115,7 @@ def _make_degraded_assessment(state: DepAnalysisState, error_msg: str) -> dict:
 async def check_cache_node(state: DepAnalysisState) -> Command:
     """Return cached impact assessment if available, skipping the full pipeline."""
     try:
-        cached = cache.get_cached_assessment(
+        cached = await cache.get_cached_assessment(
             state["project_path"],
             state["dep_name"],
             state["current_version"],
@@ -125,7 +126,14 @@ async def check_cache_node(state: DepAnalysisState) -> Command:
         logger.debug("Cache read traceback for %s", state["dep_name"], exc_info=True)
         return Command(goto="fetch_changelog", update={})
     if cached is not None:
+        logger.info("Dependency %s: cache hit", state["dep_name"])
         return Command(goto=END, update={"impact_assessments": [cached]})
+    logger.info(
+        "Dependency %s: analyzing (%s -> %s)",
+        state["dep_name"],
+        state["current_version"],
+        state["latest_version"],
+    )
     return Command(goto="fetch_changelog", update={})
 
 
@@ -147,6 +155,7 @@ async def fetch_changelog_node(state: DepAnalysisState) -> Command:
         if cached is not None:
             text, warnings = cached
         else:
+            logger.info("Dependency %s: fetching changelog", state["dep_name"])
             try:
                 text, warnings = await changelog.fetch_changelog(
                     changelog_url=state["changelog_url"] or None,
@@ -247,6 +256,7 @@ async def parse_code_node(state: DepAnalysisState) -> Command:
 
 async def assess_impact_node(state: DepAnalysisState) -> Command:
     """Assess impact of breaking changes on code usages."""
+    logger.info("Dependency %s: assessing impact", state["dep_name"])
     breaking_changes = [BreakingChange.model_validate(bc) for bc in state["rag_results"]]
     code_usages = [CodeUsage.model_validate(cu) for cu in state["code_usages"]]
 
@@ -315,6 +325,7 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
 
 async def scan_dependencies_node(state: AnalysisState) -> Command:
     """Scan project and find outdated dependencies."""
+    logger.info("Scanning dependencies...")
     deps = await scanner.scan_project(state["project_path"])
     outdated, registry_errors = await registry.find_outdated(deps)
 
@@ -338,6 +349,8 @@ async def scan_dependencies_node(state: AnalysisState) -> Command:
         for od in outdated
     ]
 
+    logger.info("Found %d outdated dependencies (of %d total)", len(dep_dicts), len(deps))
+
     update: dict = {"dependencies": dep_dicts, "total_dependencies": len(deps)}
     if registry_errors:
         update["errors"] = registry_errors
@@ -346,6 +359,7 @@ async def scan_dependencies_node(state: AnalysisState) -> Command:
 
 async def parse_all_code_node(state: AnalysisState) -> Command:
     """Parse all project source files once and store usages in state."""
+    logger.info("Parsing project code...")
     try:
         usages = await code_parser.find_all_usages(state["project_path"])
     except (OSError, UnicodeDecodeError) as exc:
@@ -412,6 +426,7 @@ async def generate_patches_node(state: AnalysisState) -> Command:
 
 async def generate_report_node(state: AnalysisState) -> Command:
     """Build and export final report."""
+    logger.info("Generating report...")
     assessments = [ImpactAssessment.model_validate(a) for a in state["impact_assessments"]]
 
     patch_sets: list[PatchSet] = []

@@ -114,11 +114,10 @@ class TestGetEmbedding:
 
         with (
             patch("migratowl.core.llm._get_raw_openai_client") as mock_get_client,
+            patch("migratowl.core.llm.active_embedding_model", return_value="text-embedding-3-small"),
             patch("migratowl.core.llm.settings") as mock_settings,
         ):
             mock_settings.use_local_llm = False
-            mock_settings.embedding_model = "text-embedding-3-small"
-            mock_settings.local_embedding_model = "nomic-embed-text"
             mock_client = AsyncMock()
             mock_client.embeddings.create.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -151,10 +150,10 @@ class TestGetEmbedding:
 
         with (
             patch("migratowl.core.llm._get_raw_openai_client") as mock_get_client,
+            patch("migratowl.core.llm.active_embedding_model", return_value="nomic-embed-text"),
             patch("migratowl.core.llm.settings") as mock_settings,
         ):
             mock_settings.use_local_llm = True
-            mock_settings.local_embedding_model = "nomic-embed-text"
             mock_client = MagicMock()
             mock_client.embeddings.create = slow_create
             mock_get_client.return_value = mock_client
@@ -172,11 +171,10 @@ class TestGetEmbedding:
 
         with (
             patch("migratowl.core.llm._get_raw_openai_client") as mock_get_client,
+            patch("migratowl.core.llm.active_embedding_model", return_value="nomic-embed-text"),
             patch("migratowl.core.llm.settings") as mock_settings,
         ):
             mock_settings.use_local_llm = True
-            mock_settings.embedding_model = "text-embedding-3-small"
-            mock_settings.local_embedding_model = "nomic-embed-text"
             mock_client = AsyncMock()
             mock_client.embeddings.create.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -214,10 +212,10 @@ class TestGetEmbeddingOpenAISemaphore:
 
         with (
             patch("migratowl.core.llm._get_raw_openai_client") as mock_get_client,
+            patch("migratowl.core.llm.active_embedding_model", return_value="text-embedding-3-small"),
             patch("migratowl.core.llm.settings") as mock_settings,
         ):
             mock_settings.use_local_llm = False
-            mock_settings.embedding_model = "text-embedding-3-small"
             mock_settings.max_concurrent_llm_calls = max_concurrent
             mock_client = MagicMock()
             mock_client.embeddings.create = slow_create

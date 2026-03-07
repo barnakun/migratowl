@@ -10,13 +10,14 @@ import pytest
 
 
 class TestGetCachedAssessment:
-    def test_cache_miss_returns_none_when_no_file(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_cache_miss_returns_none_when_no_file(self, tmp_path: Path) -> None:
         with patch("migratowl.core.cache.settings") as mock_settings:
             mock_settings.cache_path = str(tmp_path / "cache")
 
             from migratowl.core.cache import get_cached_assessment
 
-            result = get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
+            result = await get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
 
         assert result is None
 
@@ -30,7 +31,7 @@ class TestGetCachedAssessment:
             from migratowl.core.cache import get_cached_assessment, set_cached_assessment
 
             await set_cached_assessment("/project", "requests", "2.28.0", "2.32.0", assessment)
-            result = get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
+            result = await get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
 
         assert result == assessment
 
@@ -45,7 +46,7 @@ class TestGetCachedAssessment:
 
             await set_cached_assessment("/project", "requests", "2.28.0", "2.32.0", assessment)
             # Different latest version — must be a cache miss
-            result = get_cached_assessment("/project", "requests", "2.28.0", "2.33.0")
+            result = await get_cached_assessment("/project", "requests", "2.28.0", "2.33.0")
 
         assert result is None
 
@@ -59,11 +60,12 @@ class TestGetCachedAssessment:
             from migratowl.core.cache import get_cached_assessment, set_cached_assessment
 
             await set_cached_assessment("/project-a", "requests", "2.28.0", "2.32.0", assessment)
-            result = get_cached_assessment("/project-b", "requests", "2.28.0", "2.32.0")
+            result = await get_cached_assessment("/project-b", "requests", "2.28.0", "2.32.0")
 
         assert result is None
 
-    def test_corrupt_json_returns_none(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_corrupt_json_returns_none(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir(parents=True)
 
@@ -75,7 +77,7 @@ class TestGetCachedAssessment:
             cache_file = _cache_file("/project")
             cache_file.write_text("not valid json{{{")
 
-            result = get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
+            result = await get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
 
         assert result is None
 
@@ -104,8 +106,8 @@ class TestSetCachedAssessment:
             await set_cached_assessment("/project", "requests", "2.28.0", "2.32.0", {"dep": "requests"})
             await set_cached_assessment("/project", "flask", "2.0.0", "3.0.0", {"dep": "flask"})
 
-            r1 = get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
-            r2 = get_cached_assessment("/project", "flask", "2.0.0", "3.0.0")
+            r1 = await get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
+            r2 = await get_cached_assessment("/project", "flask", "2.0.0", "3.0.0")
 
         assert r1 == {"dep": "requests"}
         assert r2 == {"dep": "flask"}
@@ -120,7 +122,7 @@ class TestSetCachedAssessment:
             await set_cached_assessment("/project", "requests", "2.28.0", "2.32.0", {"v": 1})
             await set_cached_assessment("/project", "requests", "2.28.0", "2.32.0", {"v": 2})
 
-            result = get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
+            result = await get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
 
         assert result == {"v": 2}
 
@@ -153,8 +155,8 @@ class TestConcurrentSetCachedAssessment:
                 cache_module.set_cached_assessment("/project", "flask", "2.0.0", "3.0.0", {"dep": "flask"}),
             )
 
-            r1 = cache_module.get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
-            r2 = cache_module.get_cached_assessment("/project", "flask", "2.0.0", "3.0.0")
+            r1 = await cache_module.get_cached_assessment("/project", "requests", "2.28.0", "2.32.0")
+            r2 = await cache_module.get_cached_assessment("/project", "flask", "2.0.0", "3.0.0")
 
         assert r1 == {"dep": "requests"}
         assert r2 == {"dep": "flask"}

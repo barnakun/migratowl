@@ -5,7 +5,7 @@ import asyncio
 import instructor
 from openai import AsyncOpenAI
 
-from migratowl.config import settings
+from migratowl.config import active_embedding_model, settings
 
 # Ollama is single-threaded; serialise all embedding requests to avoid
 # "connection refused" / overload errors when multiple deps are analysed in parallel.
@@ -80,7 +80,7 @@ def reset_clients() -> None:
 async def get_embedding(text: str) -> list[float]:
     """Get embedding vector for text using OpenAI or Ollama."""
     raw_client = _get_raw_openai_client()
-    model = settings.local_embedding_model if settings.use_local_llm else settings.embedding_model
+    model = active_embedding_model()
     if settings.use_local_llm:
         async with _ollama_semaphore:
             response = await raw_client.embeddings.create(model=model, input=text)

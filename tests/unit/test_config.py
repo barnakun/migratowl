@@ -113,6 +113,20 @@ class TestScalabilitySettings:
         assert s.summarize_threshold == 16_000
 
 
+class TestActiveEmbeddingModel:
+    def test_active_embedding_model_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("migratowl.config.settings", Settings(openai_api_key="test", use_local_llm=False))
+        from migratowl.config import active_embedding_model
+
+        assert active_embedding_model() == "text-embedding-3-small"
+
+    def test_active_embedding_model_local(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("migratowl.config.settings", Settings(openai_api_key="test", use_local_llm=True))
+        from migratowl.config import active_embedding_model
+
+        assert active_embedding_model() == "nomic-embed-text"
+
+
 class TestIgnoredDependencies:
     def test_default_empty_string(self) -> None:
         s = Settings(openai_api_key="test")

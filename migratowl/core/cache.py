@@ -33,21 +33,22 @@ def _dep_key(dep_name: str, current_version: str, latest_version: str) -> str:
     return f"{dep_name}:{current_version}:{latest_version}"
 
 
-def get_cached_assessment(
+async def get_cached_assessment(
     project_path: str,
     dep_name: str,
     current_version: str,
     latest_version: str,
 ) -> dict | None:
     """Return a previously stored impact assessment, or None on cache miss."""
-    cache_file = _cache_file(project_path)
-    if not cache_file.exists():
-        return None
-    try:
-        data: dict = json.loads(cache_file.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    return data.get(_dep_key(dep_name, current_version, latest_version))
+    async with _get_cache_lock(project_path):
+        cache_file = _cache_file(project_path)
+        if not cache_file.exists():
+            return None
+        try:
+            data: dict = json.loads(cache_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return data.get(_dep_key(dep_name, current_version, latest_version))
 
 
 async def set_cached_assessment(
