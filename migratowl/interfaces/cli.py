@@ -74,17 +74,13 @@ _ENV_TEMPLATE = """\
 # MigratOwl Configuration
 # See docs for all available settings.
 
-# Required for OpenAI (not needed if using Ollama)
-# MIGRATOWL_OPENAI_API_KEY=sk-your-key-here
+# Model to use (provider:model format)
+# MIGRATOWL_MODEL=openai:gpt-4o-mini
+# MIGRATOWL_MODEL=anthropic:claude-sonnet-4-5-20250929
 
-# Model to use (default: gpt-4o-mini)
-# MIGRATOWL_OPENAI_MODEL=gpt-4o-mini
-
-# Set to true to use local Ollama instead of OpenAI
-# MIGRATOWL_USE_LOCAL_LLM=false
-
-# Ollama base URL (default: http://localhost:11434/v1)
-# MIGRATOWL_OLLAMA_BASE_URL=http://localhost:11434/v1
+# API keys — use standard provider env vars (LangChain reads these automatically)
+# OPENAI_API_KEY=sk-your-key-here
+# ANTHROPIC_API_KEY=sk-ant-your-key-here
 
 # Vectorstore path (default: .migratowl/vectorstore)
 # MIGRATOWL_VECTORSTORE_PATH=.migratowl/vectorstore
@@ -127,7 +123,7 @@ def analyze(
     # TODO: --fix is not fully implemented — patch quality from the LLM is unreliable.
     # fix: bool = typer.Option(False, "--fix", help="Generate migration patches"),
     output: str | None = typer.Option(None, "--output", "-o", help="Output file path"),
-    model: str | None = typer.Option(None, "--model", "-m", help="Override the LLM model"),
+    model: str | None = typer.Option(None, "--model", "-m", help="Override the LLM model (provider:model format)"),
     format: str | None = typer.Option(None, "--format", "-f", help="Output format: json or markdown"),
     ignore: str | None = typer.Option(None, "--ignore", "-i", help="Comma-separated dependencies to skip"),
     verbose: int = typer.Option(
@@ -142,14 +138,8 @@ def analyze(
         console.print(f"[red]Error: Path '{project_path}' does not exist[/red]")
         raise typer.Exit(code=1)
 
-    if not settings.use_local_llm and not settings.openai_api_key:
-        console.print(
-            "[red]Error: MIGRATOWL_OPENAI_API_KEY is required (or set MIGRATOWL_USE_LOCAL_LLM=true for Ollama)[/red]"
-        )
-        raise typer.Exit(code=1)
-
     if model:
-        settings.openai_model = model
+        settings.model = model
 
     ignored_deps = [d.strip() for d in ignore.split(",") if d.strip()] if ignore else None
 

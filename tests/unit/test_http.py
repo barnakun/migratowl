@@ -133,9 +133,7 @@ class TestRetryTransport:
 
     @pytest.mark.asyncio
     async def test_returns_error_after_max_retries(self) -> None:
-        transport, inner = _make_transport(
-            [_mock_response(503)] * 4, max_retries=3
-        )
+        transport, inner = _make_transport([_mock_response(503)] * 4, max_retries=3)
         with patch("migratowl.core.http.asyncio.sleep", new_callable=AsyncMock):
             resp = await transport.handle_async_request(_REQ)
         assert resp.status_code == 503
@@ -143,9 +141,7 @@ class TestRetryTransport:
 
     @pytest.mark.asyncio
     async def test_retries_on_connect_error(self) -> None:
-        transport, inner = _make_transport(
-            [httpx.ConnectError("connection refused"), _mock_response(200)]
-        )
+        transport, inner = _make_transport([httpx.ConnectError("connection refused"), _mock_response(200)])
         with patch("migratowl.core.http.asyncio.sleep", new_callable=AsyncMock):
             resp = await transport.handle_async_request(_REQ)
         assert resp.status_code == 200
@@ -153,18 +149,14 @@ class TestRetryTransport:
 
     @pytest.mark.asyncio
     async def test_raises_connect_error_after_max_retries(self) -> None:
-        transport, _ = _make_transport(
-            [httpx.ConnectError("fail")] * 4, max_retries=3
-        )
+        transport, _ = _make_transport([httpx.ConnectError("fail")] * 4, max_retries=3)
         with patch("migratowl.core.http.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(httpx.ConnectError):
                 await transport.handle_async_request(_REQ)
 
     @pytest.mark.asyncio
     async def test_respects_retry_after_header(self) -> None:
-        transport, _ = _make_transport(
-            [_mock_response(429, {"Retry-After": "2"}), _mock_response(200)]
-        )
+        transport, _ = _make_transport([_mock_response(429, {"Retry-After": "2"}), _mock_response(200)])
         with patch("migratowl.core.http.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await transport.handle_async_request(_REQ)
         mock_sleep.assert_called_once_with(2.0)
@@ -183,9 +175,7 @@ class TestRetryTransport:
 
     @pytest.mark.asyncio
     async def test_zero_retries_disables_retry(self) -> None:
-        transport, inner = _make_transport(
-            [_mock_response(503)], max_retries=0
-        )
+        transport, inner = _make_transport([_mock_response(503)], max_retries=0)
         resp = await transport.handle_async_request(_REQ)
         assert resp.status_code == 503
         assert inner.handle_async_request.call_count == 1

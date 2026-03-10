@@ -83,7 +83,9 @@ def get_http_client() -> httpx.AsyncClient:
             backoff_base=settings.http_retry_backoff_base,
         )
         _client = httpx.AsyncClient(
-            transport=transport, follow_redirects=True, timeout=settings.http_timeout,
+            transport=transport,
+            follow_redirects=True,
+            timeout=settings.http_timeout,
         )
     return _client
 

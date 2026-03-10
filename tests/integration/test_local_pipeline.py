@@ -1,8 +1,7 @@
-"""Integration tests for the local (Ollama) pipeline.
+"""Integration tests for the analysis pipeline.
 
 Prerequisites:
-    - Ollama running at localhost:11434
-    - Models pulled: llama3.2, nomic-embed-text
+    - OPENAI_API_KEY set
 
 Run with:
     uv run pytest tests/integration/ -v -m integration
@@ -55,16 +54,11 @@ class TestChangelogFetchAndChunk:
 
 
 class TestRAGEmbedAndQuery:
-    """Real embedding + ChromaDB + Ollama LLM query."""
+    """Real embedding + ChromaDB + LLM query."""
 
     @pytest.mark.asyncio
     async def test_rag_embed_and_query(self) -> None:
-        from migratowl.config import Settings
         from migratowl.core.rag import embed_changelog, query
-
-        # Re-create settings to pick up monkeypatched env vars
-        settings = Settings()
-        assert settings.use_local_llm is True
 
         chunks = [
             {"version": "2.29.0", "content": "Removed deprecated `requests.packages` alias."},
@@ -73,14 +67,9 @@ class TestRAGEmbedAndQuery:
 
         await embed_changelog("requests", chunks)
 
-        try:
-            result = await query("breaking changes in requests between 2.28.0 and 2.31.0", "requests")
-            assert result.confidence >= 0.0
-            assert result.confidence <= 1.0
-        except Exception:
-            # Small local models may produce invalid JSON that fails Instructor validation.
-            # The pipeline handles this gracefully; here we just verify embed+query don't crash.
-            pytest.skip("llama3.2 produced invalid JSON for ChangelogAnalysis schema")
+        result = await query("breaking changes in requests between 2.28.0 and 2.31.0", "requests")
+        assert result.confidence >= 0.0
+        assert result.confidence <= 1.0
 
 
 class TestFullPipeline:

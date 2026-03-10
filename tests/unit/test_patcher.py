@@ -1,9 +1,10 @@
 """Tests for the patcher module."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
+from langchain_core.runnables import RunnableLambda
 
 from migratowl.core.patcher import (
     _build_impacts_context,
@@ -45,6 +46,15 @@ def _make_assessment(**kwargs) -> ImpactAssessment:
     return ImpactAssessment(**defaults)
 
 
+def _mock_structured_llm(return_value: object) -> RunnableLambda:
+    """Create a mock structured LLM that works with the PROMPT | structured_llm chain pattern."""
+
+    async def _afunc(_input: object) -> object:
+        return return_value
+
+    return RunnableLambda(func=lambda x: return_value, afunc=_afunc)
+
+
 class TestCreateUnifiedDiff:
     def test_create_unified_diff_output_format(self) -> None:
         original = "import old_func\nresult = old_func(x)\n"
@@ -68,17 +78,15 @@ class TestCreateUnifiedDiff:
 
         # Each diff line must be on its own line, not concatenated
         lines = diff.splitlines()
-        minus_lines = [l for l in lines if l.startswith("-") and not l.startswith("---")]
-        plus_lines = [l for l in lines if l.startswith("+") and not l.startswith("+++")]
+        minus_lines = [line for line in lines if line.startswith("-") and not line.startswith("---")]
+        plus_lines = [line for line in lines if line.startswith("+") and not line.startswith("+++")]
         assert minus_lines == ["-old_call()"]
         assert plus_lines == ["+new_call()"]
 
 
 class TestGeneratePatchesMockedLLM:
     @pytest.mark.asyncio
-    async def test_generate_patches_with_mocked_llm(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    async def test_generate_patches_with_mocked_llm(self, tmp_path: pytest.TempPathFactory) -> None:
         real_file = tmp_path / "app.py"
         real_file.write_text("import old_func\n")
 
@@ -95,21 +103,14 @@ class TestGeneratePatchesMockedLLM:
             unified_diff="",
         )
 
-        mock_instructor_client = AsyncMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_patch_set)
+        mock_llm = _mock_structured_llm(mock_patch_set)
 
         with (
-            patch("migratowl.core.patcher.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.patcher.get_structured_llm", return_value=mock_llm),
             patch("migratowl.core.patcher.get_llm_semaphore", return_value=asyncio.Semaphore(1)),
         ):
-            mock_create = mock_instructor_client.chat.completions.create
             assessments = [_make_assessment()]
             result = await generate_patches(assessments, str(tmp_path))
-
-            mock_create.assert_called_once()
-            call_kwargs = mock_create.call_args.kwargs
-            assert call_kwargs["response_model"] is PatchSet
-            assert call_kwargs["max_retries"] == 2  # settings.max_retries default
 
             assert len(result) == 1
             assert isinstance(result[0], PatchSet)
@@ -118,9 +119,7 @@ class TestGeneratePatchesMockedLLM:
 
 class TestUnifiedDiffPopulated:
     @pytest.mark.asyncio
-    async def test_generate_patches_populates_unified_diff(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    async def test_generate_patches_populates_unified_diff(self, tmp_path: pytest.TempPathFactory) -> None:
         """After LLM returns a PatchSet, unified_diff must be computed from patches."""
         real_file = tmp_path / "app.py"
         real_file.write_text("import old_func\n")
@@ -138,11 +137,10 @@ class TestUnifiedDiffPopulated:
             unified_diff="",  # LLM returns empty
         )
 
-        mock_instructor_client = AsyncMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_patch_set)
+        mock_llm = _mock_structured_llm(mock_patch_set)
 
         with (
-            patch("migratowl.core.patcher.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.patcher.get_structured_llm", return_value=mock_llm),
             patch("migratowl.core.patcher.get_llm_semaphore", return_value=asyncio.Semaphore(1)),
         ):
             assessments = [_make_assessment()]
@@ -169,11 +167,10 @@ class TestUnifiedDiffPopulated:
             unified_diff="",
         )
 
-        mock_instructor_client = AsyncMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_patch_set)
+        mock_llm = _mock_structured_llm(mock_patch_set)
 
         with (
-            patch("migratowl.core.patcher.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.patcher.get_structured_llm", return_value=mock_llm),
             patch("migratowl.core.patcher.get_llm_semaphore", return_value=asyncio.Semaphore(1)),
         ):
             assessments = [_make_assessment()]
@@ -237,9 +234,7 @@ class TestPatchFiltering:
         )
         assert _validate_patch_against_file(p) is False
 
-    def test_validate_patch_against_file_rejects_hallucinated_code(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    def test_validate_patch_against_file_rejects_hallucinated_code(self, tmp_path: pytest.TempPathFactory) -> None:
         f = tmp_path / "app.py"
         f.write_text("import real_module\n")
         p = PatchSuggestion(
@@ -250,9 +245,7 @@ class TestPatchFiltering:
         )
         assert _validate_patch_against_file(p) is False
 
-    def test_validate_patch_against_file_accepts_matching_code(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    def test_validate_patch_against_file_accepts_matching_code(self, tmp_path: pytest.TempPathFactory) -> None:
         f = tmp_path / "app.py"
         f.write_text("import real_module\ndo_stuff()\n")
         p = PatchSuggestion(
@@ -263,9 +256,7 @@ class TestPatchFiltering:
         )
         assert _validate_patch_against_file(p) is True
 
-    def test_validate_patch_resolves_relative_path(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    def test_validate_patch_resolves_relative_path(self, tmp_path: pytest.TempPathFactory) -> None:
         """Relative file_path + project_path should resolve to find the file."""
         f = tmp_path / "src" / "app.py"
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -278,9 +269,7 @@ class TestPatchFiltering:
         )
         assert _validate_patch_against_file(p, project_path=str(tmp_path)) is True
 
-    def test_validate_patch_absolute_path_still_works(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    def test_validate_patch_absolute_path_still_works(self, tmp_path: pytest.TempPathFactory) -> None:
         """Absolute file_path should work regardless of project_path."""
         f = tmp_path / "app.py"
         f.write_text("import old_func\n")
@@ -304,9 +293,7 @@ class TestPatchFiltering:
         assert p.original_code.strip() == p.patched_code.strip()
 
     @pytest.mark.asyncio
-    async def test_generate_patches_filters_non_code_patches(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    async def test_generate_patches_filters_non_code_patches(self, tmp_path: pytest.TempPathFactory) -> None:
         """End-to-end: LLM returns mix of code and comment patches, only code survives."""
         real_file = tmp_path / "app.py"
         real_file.write_text("import old_func\nresult = old_func(x)\n")
@@ -336,20 +323,11 @@ class TestPatchFiltering:
             unified_diff="",
         )
 
-        mock_instructor_client = AsyncMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(
-            return_value=mock_patch_set
-        )
+        mock_llm = _mock_structured_llm(mock_patch_set)
 
         with (
-            patch(
-                "migratowl.core.patcher.get_client",
-                return_value=mock_instructor_client,
-            ),
-            patch(
-                "migratowl.core.patcher.get_llm_semaphore",
-                return_value=asyncio.Semaphore(1),
-            ),
+            patch("migratowl.core.patcher.get_structured_llm", return_value=mock_llm),
+            patch("migratowl.core.patcher.get_llm_semaphore", return_value=asyncio.Semaphore(1)),
         ):
             assessments = [_make_assessment()]
             result = await generate_patches(assessments, str(tmp_path))
@@ -372,9 +350,7 @@ class TestGeneratePatchesEmpty:
 
 class TestNoopPatchIntegration:
     @pytest.mark.asyncio
-    async def test_generate_patches_filters_noop_patches(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    async def test_generate_patches_filters_noop_patches(self, tmp_path: pytest.TempPathFactory) -> None:
         """No-op patches (original == patched) must be dropped by generate_patches."""
         real_file = tmp_path / "app.py"
         real_file.write_text("import foo\ndo_stuff()\n")
@@ -398,13 +374,10 @@ class TestNoopPatchIntegration:
             unified_diff="",
         )
 
-        mock_instructor_client = AsyncMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(
-            return_value=mock_patch_set
-        )
+        mock_llm = _mock_structured_llm(mock_patch_set)
 
         with (
-            patch("migratowl.core.patcher.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.patcher.get_structured_llm", return_value=mock_llm),
             patch("migratowl.core.patcher.get_llm_semaphore", return_value=asyncio.Semaphore(1)),
         ):
             assessments = [_make_assessment()]
@@ -418,12 +391,8 @@ class TestNoopPatchIntegration:
 
 class TestLLMRetryFailure:
     @pytest.mark.asyncio
-    async def test_generate_patches_survives_llm_retry_failure(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    async def test_generate_patches_survives_llm_failure(self, tmp_path: pytest.TempPathFactory) -> None:
         """When LLM fails for one dep, other deps should still get patches."""
-        from instructor.core import InstructorRetryException
-
         real_file = tmp_path / "app.py"
         real_file.write_text("import old_func\n")
 
@@ -442,23 +411,17 @@ class TestLLMRetryFailure:
 
         call_count = 0
 
-        async def mock_create(**kwargs):
+        async def mock_afunc(_input: object) -> PatchSet:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise InstructorRetryException(
-                    Exception("validation failed"),
-                    last_completion=None,
-                    n_attempts=2,
-                    total_usage=0,
-                )
+                raise RuntimeError("LLM call failed")
             return good_patch_set
 
-        mock_instructor_client = AsyncMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(side_effect=mock_create)
+        mock_llm = RunnableLambda(func=lambda x: good_patch_set, afunc=mock_afunc)
 
         with (
-            patch("migratowl.core.patcher.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.patcher.get_structured_llm", return_value=mock_llm),
             patch("migratowl.core.patcher.get_llm_semaphore", return_value=asyncio.Semaphore(1)),
         ):
             assessments = [
@@ -479,7 +442,7 @@ class TestLLMRetryFailure:
 
 class TestCommentOnlyFilter:
     def test_rejects_appended_trailing_comment(self) -> None:
-        """code → code # comment should be rejected."""
+        """code -> code # comment should be rejected."""
         p = PatchSuggestion(
             file_path="src/app.py",
             original_code="console = Console()",
@@ -489,7 +452,7 @@ class TestCommentOnlyFilter:
         assert _is_comment_only_change(p) is True
 
     def test_rejects_added_comment_lines(self) -> None:
-        """code → code + comment line should be rejected."""
+        """code -> code + comment line should be rejected."""
         p = PatchSuggestion(
             file_path="src/app.py",
             original_code="await close_http_client()",
@@ -547,7 +510,7 @@ class TestCommentOnlyFilter:
         assert _is_comment_only_change(p) is False
 
     def test_rejects_js_trailing_comment(self) -> None:
-        """const x = 1; → const x = 1; // note should be rejected."""
+        """const x = 1; -> const x = 1; // note should be rejected."""
         p = PatchSuggestion(
             file_path="src/app.js",
             original_code="const x = 1;",
@@ -572,9 +535,7 @@ class TestCommentOnlyFilter:
         assert _strip_line_comments('"http://x" // comment', ("//",)).rstrip() == '"http://x"'
 
     @pytest.mark.asyncio
-    async def test_generate_patches_filters_comment_only_patches(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    async def test_generate_patches_filters_comment_only_patches(self, tmp_path: pytest.TempPathFactory) -> None:
         """Full pipeline: comment-only patch filtered, real patch kept."""
         real_file = tmp_path / "app.py"
         real_file.write_text("console = Console()\nimport old_func\n")
@@ -598,13 +559,10 @@ class TestCommentOnlyFilter:
             unified_diff="",
         )
 
-        mock_instructor_client = AsyncMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(
-            return_value=mock_patch_set
-        )
+        mock_llm = _mock_structured_llm(mock_patch_set)
 
         with (
-            patch("migratowl.core.patcher.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.patcher.get_structured_llm", return_value=mock_llm),
             patch("migratowl.core.patcher.get_llm_semaphore", return_value=asyncio.Semaphore(1)),
         ):
             assessments = [_make_assessment()]
@@ -642,9 +600,7 @@ class TestSnippetHelpers:
     def test_read_code_context_missing_file(self) -> None:
         assert _read_code_context("/nonexistent/file.py", 10) is None
 
-    def test_read_code_context_clamps_to_file_bounds(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    def test_read_code_context_clamps_to_file_bounds(self, tmp_path: pytest.TempPathFactory) -> None:
         f = tmp_path / "short.py"
         f.write_text("line 1\nline 2\nline 3\n")
 
@@ -654,9 +610,7 @@ class TestSnippetHelpers:
         # Should not crash, just return available lines
         assert len(snippet.strip().splitlines()) <= 6
 
-    def test_read_code_context_relative_path(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    def test_read_code_context_relative_path(self, tmp_path: pytest.TempPathFactory) -> None:
         """Relative file_path + base_path should resolve to read the file."""
         f = tmp_path / "src" / "app.py"
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -667,9 +621,7 @@ class TestSnippetHelpers:
         assert snippet is not None
         assert "line 5" in snippet
 
-    def test_build_impacts_context_embeds_snippets(
-        self, tmp_path: pytest.TempPathFactory
-    ) -> None:
+    def test_build_impacts_context_embeds_snippets(self, tmp_path: pytest.TempPathFactory) -> None:
         f = tmp_path / "app.py"
         f.write_text("import os\nimport old_func\nfrom old_func import helper\nresult = old_func(x)\nprint(result)\n")
 

@@ -1,12 +1,14 @@
-"""ChromaDB embedding and retrieval for changelog analysis."""
+"""LangChain-Chroma embedding and retrieval for changelog analysis."""
 
 from __future__ import annotations
 
 import hashlib
-from typing import Any
 
-from migratowl.config import active_embedding_model, active_model, settings
-from migratowl.core.llm import get_client, get_embedding, get_llm_semaphore
+from langchain_chroma import Chroma
+
+from migratowl.config import settings
+from migratowl.core.llm import get_embeddings, get_llm_semaphore, get_structured_llm
+from migratowl.core.prompts import CHANGELOG_ANALYSIS_PROMPT, CHANGELOG_SUMMARY_PROMPT
 from migratowl.models.schemas import BreakingChange, ChangelogAnalysis, ChangelogSummary, RAGQueryResult
 
 # Safe sub-chunk size for embedding. RST/technical content tokenizes at ~2 chars/token,
@@ -16,48 +18,54 @@ from migratowl.models.schemas import BreakingChange, ChangelogAnalysis, Changelo
 EMBED_CHUNK_CHARS = 4_000
 
 
-def _import_chromadb() -> Any:
-    """Lazy import chromadb to avoid import errors in test environments."""
-    import chromadb as _chromadb
-
-    return _chromadb
+_vectorstore_cache: dict[str, Chroma] = {}
 
 
-def get_collection(project_path: str = "") -> Any:
-    """Get or create the changelogs collection with cosine similarity.
+def get_vectorstore(project_path: str = "") -> Chroma:
+    """Get or create the changelogs vector store with cosine similarity.
 
     The collection name is namespaced by both the active embedding model and the
-    project path so that different projects and embedding backends never share a
-    collection.  OpenAI (1536-dim) and Ollama (768-dim) embeddings also remain
-    separated since they are incompatible vector dimensions.
+    project path so that different projects never share a collection.
+    Instances are cached per project_path to avoid recreating Chroma objects.
     """
-    _chromadb = _import_chromadb()
-    client = _chromadb.PersistentClient(path=settings.vectorstore_path)
-    model = active_embedding_model()
-    safe_model = model.replace("/", "_").replace("-", "_").replace(".", "_")
+    if project_path in _vectorstore_cache:
+        return _vectorstore_cache[project_path]
+
+    model = settings.embedding_model
+    safe_model = model.replace("/", "_").replace("-", "_").replace(".", "_").replace(":", "_")
     project_hash = hashlib.sha256(project_path.encode()).hexdigest()[:8]
-    return client.get_or_create_collection(
-        f"changelogs_{safe_model}_{project_hash}",
-        metadata={"hnsw:space": "cosine"},
+    vs = Chroma(
+        persist_directory=settings.vectorstore_path,
+        embedding_function=get_embeddings(),
+        collection_name=f"changelogs_{safe_model}_{project_hash}",
+        collection_metadata={"hnsw:space": "cosine"},
     )
+    _vectorstore_cache[project_path] = vs
+    return vs
+
+
+def reset_vectorstore_cache() -> None:
+    """Clear the vectorstore cache. Used for test cleanup."""
+    _vectorstore_cache.clear()
 
 
 def purge_dep_embeddings(dep_name: str, project_path: str = "") -> int:
     """Remove all embeddings for a single dependency. Returns count of deleted docs."""
-    collection = get_collection(project_path)
-    existing = collection.get(where={"dep_name": dep_name})
+    vectorstore = get_vectorstore(project_path)
+    existing = vectorstore.get(where={"dep_name": dep_name})
     ids = existing["ids"]
     if ids:
-        collection.delete(ids=ids)
+        vectorstore.delete(ids=ids)
     return len(ids)
 
 
 def purge_stale_embeddings(
-    active_dep_names: set[str], project_path: str = "",
+    active_dep_names: set[str],
+    project_path: str = "",
 ) -> dict[str, int]:
     """Remove embeddings for deps not in active_dep_names. Returns {dep: count} of purged."""
-    collection = get_collection(project_path)
-    all_docs = collection.get()
+    vectorstore = get_vectorstore(project_path)
+    all_docs = vectorstore.get()
     embedded_deps: set[str] = set()
     for meta in all_docs.get("metadatas", []):
         if meta and "dep_name" in meta:
@@ -73,24 +81,37 @@ def purge_stale_embeddings(
 
 
 async def embed_changelog(dep_name: str, version_chunks: list[dict], project_path: str = "") -> None:
-    """Embed and upsert changelog chunks into ChromaDB.
+    """Embed and store changelog chunks into the vector store.
 
     Each chunk: {"version": "2.0.0", "content": "..."}
     """
-    collection = get_collection(project_path)
+    vectorstore = get_vectorstore(project_path)
+
+    # Purge existing embeddings for this dep to avoid duplicate ID errors
+    # (aadd_texts calls add(), not upsert(), so re-runs would fail otherwise)
+    purge_dep_embeddings(dep_name, project_path)
+
+    all_texts: list[str] = []
+    all_metadatas: list[dict[str, str]] = []
+    all_ids: list[str] = []
+
+    # Track how many times each version has been seen to generate unique IDs
+    # (changelogs can mention the same version in multiple sections)
+    version_counts: dict[str, int] = {}
 
     for chunk in version_chunks:
         content = chunk["content"]
+        version = chunk["version"]
+        base_idx = version_counts.get(version, 0)
         sub_contents = [content[i : i + EMBED_CHUNK_CHARS] for i in range(0, max(len(content), 1), EMBED_CHUNK_CHARS)]
         for idx, sub_content in enumerate(sub_contents):
-            embedding = await get_embedding(sub_content)
-            doc_id = f"{dep_name}:{chunk['version']}:{idx}"
-            collection.upsert(
-                ids=[doc_id],
-                embeddings=[embedding],
-                documents=[sub_content],
-                metadatas=[{"dep_name": dep_name, "version": chunk["version"]}],
-            )
+            all_texts.append(sub_content)
+            all_metadatas.append({"dep_name": dep_name, "version": version})
+            all_ids.append(f"{dep_name}:{version}:{base_idx + idx}")
+        version_counts[version] = base_idx + len(sub_contents)
+
+    if all_texts:
+        await vectorstore.aadd_texts(texts=all_texts, metadatas=all_metadatas, ids=all_ids)
 
 
 async def _summarize_changelog(text: str, dep_name: str) -> str:
@@ -99,26 +120,14 @@ async def _summarize_changelog(text: str, dep_name: str) -> str:
     Called when combined chunk text exceeds SUMMARIZE_THRESHOLD_CHARS.  Returns
     a concise plain-text summary focused on breaking changes and deprecations.
     """
-    instructor_client = get_client()
+    structured_llm = get_structured_llm(ChangelogSummary)
+    chain = CHANGELOG_SUMMARY_PROMPT | structured_llm
     async with get_llm_semaphore():
-        result: ChangelogSummary = await instructor_client.chat.completions.create(
-            model=active_model(),
-            response_model=ChangelogSummary,
-            max_retries=settings.max_retries,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a dependency migration expert. "
-                        "Summarize the following changelog text, keeping only breaking changes, "
-                        "removals, renames, and deprecations. Discard new features and minor fixes."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Summarize this {dep_name} changelog:\n\n{text}",
-                },
-            ],
+        result: ChangelogSummary = await chain.ainvoke(
+            {
+                "dep_name": dep_name,
+                "text": text,
+            }
         )
     return result.summary
 
@@ -165,16 +174,10 @@ async def query(
     if n_results is None:
         n_results = settings.max_rag_results
 
-    collection = get_collection(project_path)
-    query_embedding = await get_embedding(query_text)
+    vectorstore = get_vectorstore(project_path)
+    docs = await vectorstore.asimilarity_search(query_text, k=n_results, filter={"dep_name": dep_name})
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        where={"dep_name": dep_name},
-        n_results=n_results,
-    )
-
-    documents = results["documents"][0] if results["documents"] else []
+    documents = [doc.page_content for doc in docs]
 
     if not documents:
         return RAGQueryResult(breaking_changes=[], confidence=0.0, source_chunks=[])
@@ -184,27 +187,17 @@ async def query(
     if len(combined_text) > settings.summarize_threshold:
         combined_text = await _summarize_changelog(combined_text, dep_name)
 
-    instructor_client = get_client()
+    structured_llm = get_structured_llm(ChangelogAnalysis)
+    chain = CHANGELOG_ANALYSIS_PROMPT | structured_llm
     async with get_llm_semaphore():
-        analysis: ChangelogAnalysis = await instructor_client.chat.completions.create(
-            model=active_model(),
-            response_model=ChangelogAnalysis,
-            max_retries=settings.max_retries,
-            messages=[  # type: ignore[arg-type]
-                {
-                    "role": "system",
-                    "content": "You are a dependency migration expert. Analyze the following changelog excerpts and identify breaking changes, deprecations, and new features.",
-                },
-                {
-                    "role": "user",
-                    "content": f"Analyze these changelog excerpts for {dep_name}:\n\n{combined_text}",
-                },
-            ],
+        analysis: ChangelogAnalysis = await chain.ainvoke(
+            {
+                "dep_name": dep_name,
+                "combined_text": combined_text,
+            }
         )
 
-    verified_changes, verification_ratio = verify_breaking_changes(
-        analysis.breaking_changes, documents
-    )
+    verified_changes, verification_ratio = verify_breaking_changes(analysis.breaking_changes, documents)
     adjusted_confidence = analysis.confidence * (1 - 0.5 * (1 - verification_ratio))
 
     return RAGQueryResult(

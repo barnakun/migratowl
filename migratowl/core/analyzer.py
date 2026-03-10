@@ -10,11 +10,8 @@ import sys
 from typing import Any
 
 import httpx
-import openai
-from instructor.core import InstructorRetryException
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, Send
-from openai import APIConnectionError, AuthenticationError
 
 from migratowl.config import settings
 from migratowl.core import cache, changelog, changelog_cache, code_parser, impact, llm, patcher, rag, registry, scanner
@@ -272,12 +269,9 @@ async def assess_impact_node(state: DepAnalysisState) -> Command:
             breaking_changes=breaking_changes,
             code_usages=code_usages,
         )
-    except (
-        openai.APIError,
-        openai.APIConnectionError,
-        httpx.RequestError,
-        InstructorRetryException,
-    ) as exc:
+    except (AttributeError, TypeError, NameError, ImportError):
+        raise
+    except Exception as exc:  # noqa: BLE001  # Provider-agnostic error handling
         error_msg = f"Impact assessment failed for {state['dep_name']}: {_clean_error_message(exc)}"
         logger.warning(error_msg)
         logger.debug("Impact assessment traceback for %s", state["dep_name"], exc_info=True)
@@ -505,23 +499,22 @@ def build_analysis_graph() -> Any:
 
 
 async def _preflight_api_check() -> None:
-    """Verify the OpenAI API key and connectivity before running the full pipeline.
+    """Verify API key and connectivity before running the full pipeline.
 
     Makes one cheap embedding call. Fatal errors (auth, connection) cause an
     immediate exit with a clear message. Transient errors (rate limit, 500) are
     ignored — individual nodes handle those with degraded assessments.
     """
-    if settings.use_local_llm:
-        return
     try:
         await llm.get_embedding("preflight check")
-    except AuthenticationError:
-        logger.error("OpenAI API key is invalid — check MIGRATOWL_OPENAI_API_KEY")
+    except ValueError:
+        # Missing API key — already validated with clear message
+        logger.error("API key validation failed — check your provider credentials")
         sys.exit(1)
-    except APIConnectionError:
-        logger.error("Cannot connect to OpenAI API — check your network or MIGRATOWL_OPENAI_API_KEY")
+    except httpx.ConnectError:
+        logger.error("Cannot connect to API — check your network and credentials")
         sys.exit(1)
-    except (openai.APIError, httpx.RequestError):
+    except Exception:  # noqa: BLE001
         # Transient errors (rate limit, server error) — don't block analysis
         logger.debug("Pre-flight API check failed with transient error, continuing", exc_info=True)
 

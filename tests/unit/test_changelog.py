@@ -1362,11 +1362,14 @@ class TestFetchChangelogReadmeLink:
             patch(
                 "migratowl.core.changelog._fetch_from_url",
                 new_callable=AsyncMock,
-                side_effect=[httpx.HTTPStatusError(
-                    "Not Found",
-                    request=httpx.Request("GET", "https://example.com"),
-                    response=httpx.Response(404),
-                ), "## v2.0.0\n- Change"],
+                side_effect=[
+                    httpx.HTTPStatusError(
+                        "Not Found",
+                        request=httpx.Request("GET", "https://example.com"),
+                        response=httpx.Response(404),
+                    ),
+                    "## v2.0.0\n- Change",
+                ],
             ),
             patch(
                 "migratowl.core.changelog._fetch_changelog_link_from_readme",
@@ -1394,11 +1397,14 @@ class TestFetchChangelogReadmeLink:
             patch(
                 "migratowl.core.changelog._fetch_from_url",
                 new_callable=AsyncMock,
-                side_effect=[httpx.HTTPStatusError(
-                    "Not Found",
-                    request=httpx.Request("GET", "https://example.com"),
-                    response=httpx.Response(404),
-                ), "## v1.0.0\n- Init"],
+                side_effect=[
+                    httpx.HTTPStatusError(
+                        "Not Found",
+                        request=httpx.Request("GET", "https://example.com"),
+                        response=httpx.Response(404),
+                    ),
+                    "## v1.0.0\n- Init",
+                ],
             ) as mock_fetch,
             patch(
                 "migratowl.core.changelog._fetch_changelog_link_from_readme",

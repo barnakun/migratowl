@@ -379,12 +379,18 @@ def test_filter_usages_for_dep_is_public() -> None:
     """filter_usages_for_dep (no underscore) is importable and works."""
     usages = [
         CodeUsage(
-            file_path="a.py", line_number=1, usage_type="import",
-            symbol="requests", code_snippet="import requests",
+            file_path="a.py",
+            line_number=1,
+            usage_type="import",
+            symbol="requests",
+            code_snippet="import requests",
         ),
         CodeUsage(
-            file_path="a.py", line_number=2, usage_type="import",
-            symbol="flask", code_snippet="from flask import Flask",
+            file_path="a.py",
+            line_number=2,
+            usage_type="import",
+            symbol="flask",
+            code_snippet="from flask import Flask",
         ),
     ]
     filtered = filter_usages_for_dep(usages, "requests")

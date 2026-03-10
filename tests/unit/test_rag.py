@@ -1,8 +1,10 @@
-"""Tests for RAG module with mocked ChromaDB and LLM."""
+"""Tests for RAG module with mocked langchain-chroma vector store and LLM."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.documents import Document
+from langchain_core.runnables import RunnableLambda
 
 from migratowl.models.schemas import (
     BreakingChange,
@@ -12,240 +14,231 @@ from migratowl.models.schemas import (
 )
 
 
-class TestGetCollection:
-    def test_creates_collection_with_cosine_similarity(self) -> None:
-        mock_chromadb = MagicMock()
-        mock_client = MagicMock()
-        mock_collection = MagicMock()
-        mock_chromadb.PersistentClient.return_value = mock_client
-        mock_client.get_or_create_collection.return_value = mock_collection
+def _mock_structured_llm(return_value: object) -> RunnableLambda:
+    """Create a mock structured LLM that works with the PROMPT | structured_llm chain pattern.
+
+    Uses RunnableLambda so it integrates properly with LangChain's pipe operator.
+    """
+
+    async def _afunc(_input: object) -> object:
+        return return_value
+
+    return RunnableLambda(func=lambda x: return_value, afunc=_afunc)
+
+
+class TestGetVectorstore:
+    def setup_method(self) -> None:
+        from migratowl.core.rag import reset_vectorstore_cache
+
+        reset_vectorstore_cache()
+
+    def test_creates_vectorstore_with_cosine_similarity(self) -> None:
+        mock_embeddings = MagicMock()
 
         with (
-            patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
-            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
+            patch("migratowl.core.rag.Chroma") as mock_chroma_cls,
+            patch("migratowl.core.rag.get_embeddings", return_value=mock_embeddings),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/vs"
+            mock_settings.embedding_model = "openai:text-embedding-3-small"
 
-            from migratowl.core.rag import get_collection
+            from migratowl.core.rag import get_vectorstore
 
-            collection = get_collection()
+            vs = get_vectorstore()
 
-            mock_chromadb.PersistentClient.assert_called_once()
-            call_args = mock_client.get_or_create_collection.call_args
-            collection_name = call_args.args[0] if call_args.args else call_args.kwargs["name"]
-            assert collection_name.startswith("changelogs_")
-            assert call_args.kwargs["metadata"] == {"hnsw:space": "cosine"}
-            assert collection is mock_collection
-
-    def test_openai_and_ollama_use_different_collection_names(self) -> None:
-        """Different embedding backends must use separate collections to avoid dimension conflicts."""
-        mock_chromadb = MagicMock()
-        mock_client = MagicMock()
-        mock_chromadb.PersistentClient.return_value = mock_client
-        mock_client.get_or_create_collection.return_value = MagicMock()
-
-        from migratowl.core.rag import get_collection
-
-        with (
-            patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
-            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
-            patch("migratowl.core.rag.settings") as mock_settings,
-        ):
-            mock_settings.vectorstore_path = "/tmp/vs"
-            get_collection()
-            openai_name = mock_client.get_or_create_collection.call_args.args[0]
-
-        mock_client.reset_mock()
-
-        with (
-            patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
-            patch("migratowl.core.rag.active_embedding_model", return_value="nomic-embed-text"),
-            patch("migratowl.core.rag.settings") as mock_settings,
-        ):
-            mock_settings.vectorstore_path = "/tmp/vs"
-            get_collection()
-            ollama_name = mock_client.get_or_create_collection.call_args.args[0]
-
-        assert openai_name != ollama_name
+            mock_chroma_cls.assert_called_once()
+            call_kwargs = mock_chroma_cls.call_args.kwargs
+            assert call_kwargs["persist_directory"] == "/tmp/vs"
+            assert call_kwargs["embedding_function"] is mock_embeddings
+            assert call_kwargs["collection_name"].startswith("changelogs_")
+            assert call_kwargs["collection_metadata"] == {"hnsw:space": "cosine"}
+            assert vs is mock_chroma_cls.return_value
 
     def test_different_projects_use_different_collection_names(self) -> None:
-        """Two different project paths must produce separate ChromaDB collections."""
-        mock_chromadb = MagicMock()
-        mock_client = MagicMock()
-        mock_chromadb.PersistentClient.return_value = mock_client
-        mock_client.get_or_create_collection.return_value = MagicMock()
+        """Two different project paths must produce separate collections."""
+        mock_embeddings = MagicMock()
 
-        from migratowl.core.rag import get_collection
+        from migratowl.core.rag import get_vectorstore
 
         with (
-            patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
-            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
+            patch("migratowl.core.rag.Chroma") as mock_chroma_cls,
+            patch("migratowl.core.rag.get_embeddings", return_value=mock_embeddings),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/vs"
+            mock_settings.embedding_model = "openai:text-embedding-3-small"
 
-            get_collection(project_path="/projects/app-a")
-            name_a = mock_client.get_or_create_collection.call_args.args[0]
-            mock_client.reset_mock()
+            get_vectorstore(project_path="/projects/app-a")
+            name_a = mock_chroma_cls.call_args_list[0].kwargs["collection_name"]
 
-            get_collection(project_path="/projects/app-b")
-            name_b = mock_client.get_or_create_collection.call_args.args[0]
+            get_vectorstore(project_path="/projects/app-b")
+            name_b = mock_chroma_cls.call_args_list[1].kwargs["collection_name"]
 
         assert name_a != name_b
 
     def test_same_project_path_uses_same_collection_name(self) -> None:
-        """The same project path must always resolve to the same collection name."""
-        mock_chromadb = MagicMock()
-        mock_client = MagicMock()
-        mock_chromadb.PersistentClient.return_value = mock_client
-        mock_client.get_or_create_collection.return_value = MagicMock()
+        """The same project path must always resolve to the same collection name —
+        verified via the caching test (same instance returned)."""
+        mock_embeddings = MagicMock()
 
-        from migratowl.core.rag import get_collection
+        from migratowl.core.rag import get_vectorstore
 
         with (
-            patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
-            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
+            patch("migratowl.core.rag.Chroma") as mock_chroma_cls,
+            patch("migratowl.core.rag.get_embeddings", return_value=mock_embeddings),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/vs"
+            mock_settings.embedding_model = "openai:text-embedding-3-small"
 
-            get_collection(project_path="/projects/my-app")
-            name_1 = mock_client.get_or_create_collection.call_args.args[0]
-            mock_client.reset_mock()
+            vs1 = get_vectorstore(project_path="/projects/my-app")
+            vs2 = get_vectorstore(project_path="/projects/my-app")
 
-            get_collection(project_path="/projects/my-app")
-            name_2 = mock_client.get_or_create_collection.call_args.args[0]
+        # Cached: same instance, Chroma called only once
+        assert vs1 is vs2
+        mock_chroma_cls.assert_called_once()
 
-        assert name_1 == name_2
-
-    def test_uses_persistent_client_with_settings_path(self) -> None:
-        mock_chromadb = MagicMock()
-        mock_client = MagicMock()
-        mock_chromadb.PersistentClient.return_value = mock_client
-        mock_client.get_or_create_collection.return_value = MagicMock()
+    def test_uses_settings_path(self) -> None:
+        mock_embeddings = MagicMock()
 
         with (
-            patch("migratowl.core.rag._import_chromadb", return_value=mock_chromadb),
-            patch("migratowl.core.rag.active_embedding_model", return_value="text-embedding-3-small"),
+            patch("migratowl.core.rag.Chroma") as mock_chroma_cls,
+            patch("migratowl.core.rag.get_embeddings", return_value=mock_embeddings),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.vectorstore_path = "/tmp/test_vectorstore"
+            mock_settings.embedding_model = "openai:text-embedding-3-small"
 
-            from migratowl.core.rag import get_collection
+            from migratowl.core.rag import get_vectorstore
 
-            get_collection()
+            get_vectorstore()
 
-            mock_chromadb.PersistentClient.assert_called_once_with(path="/tmp/test_vectorstore")
+            assert mock_chroma_cls.call_args.kwargs["persist_directory"] == "/tmp/test_vectorstore"
+
+    def test_caches_instance_per_project_path(self) -> None:
+        """Same project_path returns the same Chroma instance (cached)."""
+        mock_embeddings = MagicMock()
+
+        from migratowl.core.rag import get_vectorstore
+
+        with (
+            patch("migratowl.core.rag.Chroma") as mock_chroma_cls,
+            patch("migratowl.core.rag.get_embeddings", return_value=mock_embeddings),
+            patch("migratowl.core.rag.settings") as mock_settings,
+        ):
+            mock_settings.vectorstore_path = "/tmp/vs"
+            mock_settings.embedding_model = "openai:text-embedding-3-small"
+
+            vs1 = get_vectorstore(project_path="/projects/app")
+            vs2 = get_vectorstore(project_path="/projects/app")
+
+        assert vs1 is vs2
+        mock_chroma_cls.assert_called_once()
+
+    def test_different_project_paths_not_cached_together(self) -> None:
+        """Different project_paths return different Chroma instances."""
+        mock_embeddings = MagicMock()
+
+        from migratowl.core.rag import get_vectorstore
+
+        with (
+            patch("migratowl.core.rag.Chroma", side_effect=[MagicMock(), MagicMock()]) as mock_chroma_cls,
+            patch("migratowl.core.rag.get_embeddings", return_value=mock_embeddings),
+            patch("migratowl.core.rag.settings") as mock_settings,
+        ):
+            mock_settings.vectorstore_path = "/tmp/vs"
+            mock_settings.embedding_model = "openai:text-embedding-3-small"
+
+            vs1 = get_vectorstore(project_path="/projects/app-a")
+            vs2 = get_vectorstore(project_path="/projects/app-b")
+
+        assert vs1 is not vs2
+        assert mock_chroma_cls.call_count == 2
 
 
 class TestEmbedChangelog:
     @pytest.mark.asyncio
-    async def test_upserts_chunks_with_metadata(self) -> None:
-        mock_collection = MagicMock()
-        mock_embedding = [0.1] * 128
+    async def test_adds_chunks_with_metadata(self) -> None:
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.aadd_texts = AsyncMock()
 
         chunks = [
             {"version": "2.0.0", "content": "Breaking change"},
             {"version": "1.0.0", "content": "Initial release"},
         ]
 
-        with (
-            patch(
-                "migratowl.core.rag.get_collection",
-                return_value=mock_collection,
-            ),
-            patch(
-                "migratowl.core.rag.get_embedding",
-                new_callable=AsyncMock,
-                return_value=mock_embedding,
-            ),
-        ):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             from migratowl.core.rag import embed_changelog
 
             await embed_changelog("requests", chunks)
 
-            assert mock_collection.upsert.call_count == 2
+            assert mock_vectorstore.aadd_texts.call_count == 1
 
-            first_call = mock_collection.upsert.call_args_list[0]
-            assert first_call.kwargs["metadatas"] == [{"dep_name": "requests", "version": "2.0.0"}]
-            assert first_call.kwargs["embeddings"] == [mock_embedding]
-            assert first_call.kwargs["documents"] == ["Breaking change"]
+            call_kwargs = mock_vectorstore.aadd_texts.call_args.kwargs
+            assert call_kwargs["texts"] == ["Breaking change", "Initial release"]
+            assert call_kwargs["metadatas"] == [
+                {"dep_name": "requests", "version": "2.0.0"},
+                {"dep_name": "requests", "version": "1.0.0"},
+            ]
+            assert call_kwargs["ids"] == ["requests:2.0.0:0", "requests:1.0.0:0"]
 
     @pytest.mark.asyncio
     async def test_sub_chunks_oversized_version_sections(self) -> None:
         """Version sections larger than EMBED_CHUNK_CHARS must be split into multiple
-        sub-chunks, each embedded separately — no information is lost and each sub-chunk
-        stays within the embedding model's context window."""
+        sub-chunks, each stored separately — no information is lost."""
         from migratowl.core.rag import EMBED_CHUNK_CHARS, embed_changelog
 
-        mock_collection = MagicMock()
-        mock_embedding = [0.1] * 128
-        # Content that is exactly 2.5× the chunk size → should produce 3 sub-chunks
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.aadd_texts = AsyncMock()
+        # Content that is exactly 2.5x the chunk size -> should produce 3 sub-chunks
         oversized_content = "x" * (EMBED_CHUNK_CHARS * 2 + EMBED_CHUNK_CHARS // 2)
         chunks = [{"version": "1.0.0", "content": oversized_content}]
 
-        captured: list[str] = []
-
-        async def capture_embedding(text: str) -> list[float]:
-            captured.append(text)
-            return mock_embedding
-
-        with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", side_effect=capture_embedding),
-        ):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             await embed_changelog("flask", chunks)
 
-        assert len(captured) == 3
-        assert all(len(t) <= EMBED_CHUNK_CHARS for t in captured)
+        call_kwargs = mock_vectorstore.aadd_texts.call_args.kwargs
+        captured_texts = call_kwargs["texts"]
+        assert len(captured_texts) == 3
+        assert all(len(t) <= EMBED_CHUNK_CHARS for t in captured_texts)
         # Full content is preserved across sub-chunks
-        assert "".join(captured) == oversized_content
+        assert "".join(captured_texts) == oversized_content
 
     @pytest.mark.asyncio
     async def test_small_chunk_not_split(self) -> None:
         """Chunks that fit within EMBED_CHUNK_CHARS must not be split."""
         from migratowl.core.rag import EMBED_CHUNK_CHARS, embed_changelog
 
-        mock_collection = MagicMock()
-        mock_embedding = [0.1] * 128
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.aadd_texts = AsyncMock()
         small_content = "x" * (EMBED_CHUNK_CHARS - 1)
         chunks = [{"version": "1.0.0", "content": small_content}]
 
-        captured: list[str] = []
-
-        async def capture_embedding(text: str) -> list[float]:
-            captured.append(text)
-            return mock_embedding
-
-        with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", side_effect=capture_embedding),
-        ):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             await embed_changelog("flask", chunks)
 
-        assert len(captured) == 1
+        mock_vectorstore.aadd_texts.assert_called_once()
+        assert len(mock_vectorstore.aadd_texts.call_args.kwargs["texts"]) == 1
 
 
 class TestQueryNResults:
     @pytest.mark.asyncio
     async def test_none_n_results_defaults_to_settings_max_rag_results(self) -> None:
         """n_results=None must resolve to settings.max_rag_results at runtime."""
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [["some text"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
-        }
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content="some text", metadata={"dep_name": "flask", "version": "2.0.0"}),
+            ]
+        )
 
         mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.5)
-        mock_instructor_client = MagicMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
-            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
             patch("migratowl.core.rag.settings") as mock_settings,
         ):
             mock_settings.max_rag_results = 15
@@ -254,34 +247,32 @@ class TestQueryNResults:
 
             await query("breaking changes", "flask", n_results=None)
 
-        query_kwargs = mock_collection.query.call_args.kwargs
-        assert query_kwargs["n_results"] == 15
+        call_kwargs = mock_vectorstore.asimilarity_search.call_args.kwargs
+        assert call_kwargs["k"] == 15
 
     @pytest.mark.asyncio
     async def test_explicit_n_results_passed_directly(self) -> None:
-        """An explicit int n_results must be passed to ChromaDB unchanged."""
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [["text"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
-        }
+        """An explicit int n_results must be passed to similarity_search unchanged."""
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content="text", metadata={"dep_name": "flask", "version": "2.0.0"}),
+            ]
+        )
 
         mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.5)
-        mock_instructor_client = MagicMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
-            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
         ):
             from migratowl.core.rag import query
 
             await query("breaking changes", "flask", n_results=7)
 
-        query_kwargs = mock_collection.query.call_args.kwargs
-        assert query_kwargs["n_results"] == 7
+        call_kwargs = mock_vectorstore.asimilarity_search.call_args.kwargs
+        assert call_kwargs["k"] == 7
 
     def test_default_n_results_uses_settings(self) -> None:
         """Default n_results parameter is None, resolved to settings.max_rag_results at runtime."""
@@ -296,17 +287,15 @@ class TestQueryNResults:
 class TestQuery:
     @pytest.mark.asyncio
     async def test_returns_rag_query_result(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [["Breaking: removed old_func", "Changed API"]],
-            "distances": [[0.1, 0.2]],
-            "metadatas": [
-                [
-                    {"dep_name": "requests", "version": "2.0.0"},
-                    {"dep_name": "requests", "version": "3.0.0"},
-                ]
-            ],
-        }
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(
+                    page_content="Breaking: removed old_func", metadata={"dep_name": "requests", "version": "2.0.0"}
+                ),
+                Document(page_content="Changed API", metadata={"dep_name": "requests", "version": "3.0.0"}),
+            ]
+        )
 
         mock_analysis = ChangelogAnalysis(
             breaking_changes=[
@@ -322,26 +311,11 @@ class TestQuery:
             confidence=0.9,
         )
 
-        mock_embedding = [0.1] * 128
-
-        mock_instructor_client = MagicMock()
-        mock_create = AsyncMock(return_value=mock_analysis)
-        mock_instructor_client.chat.completions.create = mock_create
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         with (
-            patch(
-                "migratowl.core.rag.get_collection",
-                return_value=mock_collection,
-            ),
-            patch(
-                "migratowl.core.rag.get_embedding",
-                new_callable=AsyncMock,
-                return_value=mock_embedding,
-            ),
-            patch(
-                "migratowl.core.rag.get_client",
-                return_value=mock_instructor_client,
-            ),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
         ):
             from migratowl.core.rag import query
 
@@ -354,108 +328,46 @@ class TestQuery:
             assert len(result.source_chunks) == 2
 
     @pytest.mark.asyncio
-    async def test_llm_called_with_response_model(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [["some changelog text"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
-        }
-
-        mock_analysis = ChangelogAnalysis(
-            breaking_changes=[],
-            deprecations=[],
-            new_features=[],
-            confidence=0.5,
+    async def test_query_filters_by_dep_name(self) -> None:
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content="text", metadata={"dep_name": "flask", "version": "2.0.0"}),
+            ]
         )
 
-        mock_instructor_client = MagicMock()
-        mock_create = AsyncMock(return_value=mock_analysis)
-        mock_instructor_client.chat.completions.create = mock_create
-
-        mock_embedding = [0.1] * 128
-
-        with (
-            patch(
-                "migratowl.core.rag.get_collection",
-                return_value=mock_collection,
-            ),
-            patch(
-                "migratowl.core.rag.get_embedding",
-                new_callable=AsyncMock,
-                return_value=mock_embedding,
-            ),
-            patch(
-                "migratowl.core.rag.get_client",
-                return_value=mock_instructor_client,
-            ),
-        ):
-            from migratowl.core.rag import query
-
-            await query("changes in flask", "flask")
-
-            call_kwargs = mock_create.call_args.kwargs
-            assert call_kwargs["response_model"] is ChangelogAnalysis
-            assert call_kwargs["max_retries"] == 2
-
-    @pytest.mark.asyncio
-    async def test_query_filters_by_dep_name(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [["text"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
-        }
-
         mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.5)
-
-        mock_instructor_client = MagicMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
-
-        mock_embedding = [0.1] * 128
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         with (
-            patch(
-                "migratowl.core.rag.get_collection",
-                return_value=mock_collection,
-            ),
-            patch(
-                "migratowl.core.rag.get_embedding",
-                new_callable=AsyncMock,
-                return_value=mock_embedding,
-            ),
-            patch(
-                "migratowl.core.rag.get_client",
-                return_value=mock_instructor_client,
-            ),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
         ):
             from migratowl.core.rag import query
 
             await query("changes", "flask", n_results=3)
 
-            query_kwargs = mock_collection.query.call_args.kwargs
-            assert query_kwargs["where"] == {"dep_name": "flask"}
-            assert query_kwargs["n_results"] == 3
+            call_kwargs = mock_vectorstore.asimilarity_search.call_args.kwargs
+            assert call_kwargs["filter"] == {"dep_name": "flask"}
+            assert call_kwargs["k"] == 3
 
 
 class TestSummarization:
     @pytest.mark.asyncio
     async def test_small_text_skips_summarization(self) -> None:
         """Combined text under the threshold must not trigger a summarization call."""
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [["short text"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
-        }
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content="short text", metadata={"dep_name": "flask", "version": "2.0.0"}),
+            ]
+        )
         mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.5)
-        mock_instructor_client = MagicMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
-            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
             patch("migratowl.core.rag._summarize_changelog", new_callable=AsyncMock) as mock_summarize,
         ):
             from migratowl.core.rag import query
@@ -470,20 +382,18 @@ class TestSummarization:
         from migratowl.config import settings
 
         large_doc = "x" * (settings.summarize_threshold + 1)
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [[large_doc]],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "requests", "version": "3.0.0"}]],
-        }
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content=large_doc, metadata={"dep_name": "requests", "version": "3.0.0"}),
+            ]
+        )
         mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.8)
-        mock_instructor_client = MagicMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
-            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
             patch(
                 "migratowl.core.rag._summarize_changelog", new_callable=AsyncMock, return_value="concise summary"
             ) as mock_summarize,
@@ -503,57 +413,60 @@ class TestSummarization:
         from migratowl.config import settings
 
         large_doc = "y" * (settings.summarize_threshold + 1)
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [[large_doc]],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "django", "version": "5.0.0"}]],
-        }
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content=large_doc, metadata={"dep_name": "django", "version": "5.0.0"}),
+            ]
+        )
         mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.7)
-        mock_instructor_client = MagicMock()
-        mock_create = AsyncMock(return_value=mock_analysis)
-        mock_instructor_client.chat.completions.create = mock_create
+
+        # Track what gets passed to the LLM
+        invoke_args: list[object] = []
+
+        async def capture_afunc(input_val: object) -> ChangelogAnalysis:
+            invoke_args.append(input_val)
+            return mock_analysis
+
+        mock_structured_llm = RunnableLambda(func=lambda x: mock_analysis, afunc=capture_afunc)
 
         with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
-            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
             patch("migratowl.core.rag._summarize_changelog", new_callable=AsyncMock, return_value="summarized content"),
         ):
             from migratowl.core.rag import query
 
             await query("breaking changes", "django", n_results=3)
 
-        user_message = mock_create.call_args.kwargs["messages"][1]["content"]
-        assert "summarized content" in user_message
-        assert large_doc not in user_message
+        # The chain passes a ChatPromptValue to the structured_llm; verify the summary is used
+        assert len(invoke_args) == 1
+        input_str = str(invoke_args[0])
+        assert "summarized content" in input_str
+        assert large_doc not in input_str
 
 
 class TestQueryLLMSemaphore:
     @pytest.mark.asyncio
     async def test_query_acquires_llm_semaphore(self) -> None:
         """RAG query must hold the LLM semaphore while making the LLM call."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [["some text"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "flask", "version": "2.0.0"}]],
-        }
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content="some text", metadata={"dep_name": "flask", "version": "2.0.0"}),
+            ]
+        )
 
         mock_analysis = ChangelogAnalysis(breaking_changes=[], deprecations=[], new_features=[], confidence=0.5)
-        mock_instructor_client = MagicMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         mock_sem = MagicMock()
         mock_sem.__aenter__ = AsyncMock(return_value=None)
         mock_sem.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
-            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
             patch("migratowl.core.rag.get_llm_semaphore", return_value=mock_sem),
         ):
             from migratowl.core.rag import query
@@ -683,35 +596,35 @@ class TestVerifyBreakingChanges:
 
 class TestPurgeDepEmbeddings:
     def test_deletes_all_docs_for_dep(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.get.return_value = {"ids": ["flask:1.0.0:0", "flask:2.0.0:0"]}
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.get.return_value = {"ids": ["flask:1.0.0:0", "flask:2.0.0:0"]}
 
-        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             from migratowl.core.rag import purge_dep_embeddings
 
             count = purge_dep_embeddings("flask")
 
-        mock_collection.get.assert_called_once_with(where={"dep_name": "flask"})
-        mock_collection.delete.assert_called_once_with(ids=["flask:1.0.0:0", "flask:2.0.0:0"])
+        mock_vectorstore.get.assert_called_once_with(where={"dep_name": "flask"})
+        mock_vectorstore.delete.assert_called_once_with(ids=["flask:1.0.0:0", "flask:2.0.0:0"])
         assert count == 2
 
     def test_noop_when_dep_has_no_docs(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.get.return_value = {"ids": []}
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.get.return_value = {"ids": []}
 
-        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             from migratowl.core.rag import purge_dep_embeddings
 
             count = purge_dep_embeddings("nonexistent")
 
-        mock_collection.delete.assert_not_called()
+        mock_vectorstore.delete.assert_not_called()
         assert count == 0
 
     def test_returns_deleted_count(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.get.return_value = {"ids": ["a:1:0", "a:2:0", "a:3:0"]}
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.get.return_value = {"ids": ["a:1:0", "a:2:0", "a:3:0"]}
 
-        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             from migratowl.core.rag import purge_dep_embeddings
 
             count = purge_dep_embeddings("a", project_path="/tmp/proj")
@@ -721,8 +634,8 @@ class TestPurgeDepEmbeddings:
 
 class TestPurgeStalEmbeddings:
     def test_removes_orphaned_deps(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.get.return_value = {
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.get.return_value = {
             "ids": ["flask:1:0", "requests:1:0", "django:1:0", "django:2:0", "django:3:0"],
             "metadatas": [
                 {"dep_name": "flask"},
@@ -733,11 +646,9 @@ class TestPurgeStalEmbeddings:
             ],
         }
 
-        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             from migratowl.core.rag import purge_stale_embeddings
 
-            # purge_dep_embeddings will also call get_collection, so we need to
-            # mock it at a higher level
             with patch("migratowl.core.rag.purge_dep_embeddings", return_value=3) as mock_purge_dep:
                 purged = purge_stale_embeddings({"flask", "requests"})
 
@@ -745,8 +656,8 @@ class TestPurgeStalEmbeddings:
         assert purged == {"django": 3}
 
     def test_keeps_all_when_no_orphans(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.get.return_value = {
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.get.return_value = {
             "ids": ["flask:1:0", "requests:1:0"],
             "metadatas": [
                 {"dep_name": "flask"},
@@ -754,7 +665,7 @@ class TestPurgeStalEmbeddings:
             ],
         }
 
-        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             from migratowl.core.rag import purge_stale_embeddings
 
             with patch("migratowl.core.rag.purge_dep_embeddings") as mock_purge_dep:
@@ -764,10 +675,10 @@ class TestPurgeStalEmbeddings:
         assert purged == {}
 
     def test_handles_empty_collection(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.get.return_value = {"ids": [], "metadatas": []}
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.get.return_value = {"ids": [], "metadatas": []}
 
-        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             from migratowl.core.rag import purge_stale_embeddings
 
             purged = purge_stale_embeddings({"flask"})
@@ -775,8 +686,8 @@ class TestPurgeStalEmbeddings:
         assert purged == {}
 
     def test_returns_purged_counts(self) -> None:
-        mock_collection = MagicMock()
-        mock_collection.get.return_value = {
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.get.return_value = {
             "ids": ["flask:1:0", "django:1:0", "django:2:0", "django:3:0", "celery:1:0"],
             "metadatas": [
                 {"dep_name": "flask"},
@@ -791,7 +702,7 @@ class TestPurgeStalEmbeddings:
             counts = {"django": 3, "celery": 1}
             return counts.get(dep_name, 0)
 
-        with patch("migratowl.core.rag.get_collection", return_value=mock_collection):
+        with patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore):
             from migratowl.core.rag import purge_stale_embeddings
 
             with patch("migratowl.core.rag.purge_dep_embeddings", side_effect=fake_purge):
@@ -827,30 +738,27 @@ class TestQueryVerification:
     @pytest.mark.asyncio
     async def test_query_calls_verify_and_adjusts_confidence(self) -> None:
         """query() must call verify_breaking_changes with LLM results and source chunks."""
-        mock_collection = MagicMock()
+        mock_vectorstore = MagicMock()
         raw_docs = ["Breaking: removed old_func", "Changed API"]
-        mock_collection.query.return_value = {
-            "documents": [raw_docs],
-            "distances": [[0.1, 0.2]],
-            "metadatas": [[{"dep_name": "requests", "version": "2.0.0"}, {"dep_name": "requests", "version": "3.0.0"}]],
-        }
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content=text, metadata={"dep_name": "requests", "version": ver})
+                for text, ver in zip(raw_docs, ["2.0.0", "3.0.0"])
+            ]
+        )
 
         bc = BreakingChange(
             api_name="old_func", change_type=ChangeType.REMOVED, description="Removed", migration_hint="Use new"
         )
         mock_analysis = ChangelogAnalysis(breaking_changes=[bc], deprecations=[], new_features=[], confidence=0.9)
-        mock_instructor_client = MagicMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         verified_bc = bc.model_copy(update={"verified": True})
 
         with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
-            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
-            patch(
-                "migratowl.core.rag.verify_breaking_changes", return_value=([verified_bc], 1.0)
-            ) as mock_verify,
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
+            patch("migratowl.core.rag.verify_breaking_changes", return_value=([verified_bc], 1.0)) as mock_verify,
         ):
             from migratowl.core.rag import query
 
@@ -867,30 +775,26 @@ class TestQueryVerification:
 
         large_doc = "x" * (settings.summarize_threshold + 1)
         raw_docs = [large_doc]
-        mock_collection = MagicMock()
-        mock_collection.query.return_value = {
-            "documents": [raw_docs],
-            "distances": [[0.1]],
-            "metadatas": [[{"dep_name": "flask", "version": "3.0.0"}]],
-        }
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.asimilarity_search = AsyncMock(
+            return_value=[
+                Document(page_content=large_doc, metadata={"dep_name": "flask", "version": "3.0.0"}),
+            ]
+        )
 
         bc = BreakingChange(
             api_name="old_func", change_type=ChangeType.REMOVED, description="Removed", migration_hint="Use new"
         )
         mock_analysis = ChangelogAnalysis(breaking_changes=[bc], deprecations=[], new_features=[], confidence=0.8)
-        mock_instructor_client = MagicMock()
-        mock_instructor_client.chat.completions.create = AsyncMock(return_value=mock_analysis)
+        mock_structured_llm = _mock_structured_llm(mock_analysis)
 
         verified_bc = bc.model_copy(update={"verified": False})
 
         with (
-            patch("migratowl.core.rag.get_collection", return_value=mock_collection),
-            patch("migratowl.core.rag.get_embedding", new_callable=AsyncMock, return_value=[0.1] * 128),
-            patch("migratowl.core.rag.get_client", return_value=mock_instructor_client),
+            patch("migratowl.core.rag.get_vectorstore", return_value=mock_vectorstore),
+            patch("migratowl.core.rag.get_structured_llm", return_value=mock_structured_llm),
             patch("migratowl.core.rag._summarize_changelog", new_callable=AsyncMock, return_value="concise summary"),
-            patch(
-                "migratowl.core.rag.verify_breaking_changes", return_value=([verified_bc], 0.0)
-            ) as mock_verify,
+            patch("migratowl.core.rag.verify_breaking_changes", return_value=([verified_bc], 0.0)) as mock_verify,
         ):
             from migratowl.core.rag import query
 

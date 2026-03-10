@@ -7,10 +7,13 @@ import pytest
 from migratowl.core.impact import _build_impact_context, assess_impact
 from migratowl.models.schemas import (
     BreakingChange,
+    ChangelogAnalysis,
     ChangeType,
     CodeUsage,
     ImpactAssessment,
     ImpactItem,
+    PatchSet,
+    RAGQueryResult,
     Severity,
 )
 
@@ -89,10 +92,10 @@ class TestAssessImpactCallsLLM:
             overall_severity=Severity.CRITICAL,
         )
 
-        mock_instructor = MagicMock()
-        mock_instructor.chat.completions.create = AsyncMock(return_value=mock_response)
+        mock_structured_llm = AsyncMock(return_value=mock_response)
+        mock_structured_llm.ainvoke = AsyncMock(return_value=mock_response)
 
-        with patch("migratowl.core.impact.get_client", return_value=mock_instructor):
+        with patch("migratowl.core.impact.get_structured_llm", return_value=mock_structured_llm):
             result = await assess_impact(
                 dep_name="requests",
                 current_version="1.0.0",
@@ -101,11 +104,6 @@ class TestAssessImpactCallsLLM:
                 code_usages=[_make_code_usage()],
             )
 
-            mock_create = mock_instructor.chat.completions.create
-            mock_create.assert_called_once()
-            call_kwargs = mock_create.call_args.kwargs
-            assert call_kwargs["response_model"] is ImpactAssessment
-            assert call_kwargs["max_retries"] == 2
             assert result.overall_severity == Severity.CRITICAL
             assert len(result.impacts) == 1
 
@@ -122,10 +120,10 @@ class TestAssessImpactVersionsPopulated:
             overall_severity=Severity.INFO,
         )
 
-        mock_instructor = MagicMock()
-        mock_instructor.chat.completions.create = AsyncMock(return_value=mock_response)
+        mock_structured_llm = AsyncMock(return_value=mock_response)
+        mock_structured_llm.ainvoke = AsyncMock(return_value=mock_response)
 
-        with patch("migratowl.core.impact.get_client", return_value=mock_instructor):
+        with patch("migratowl.core.impact.get_structured_llm", return_value=mock_structured_llm):
             result = await assess_impact(
                 dep_name="requests",
                 current_version="1.0.0",
@@ -200,12 +198,12 @@ class TestAssessImpactLLMSemaphore:
         mock_sem.__aenter__ = AsyncMock(return_value=None)
         mock_sem.__aexit__ = AsyncMock(return_value=False)
 
-        mock_instructor = MagicMock()
-        mock_instructor.chat.completions.create = AsyncMock(return_value=mock_response)
+        mock_structured_llm = AsyncMock(return_value=mock_response)
+        mock_structured_llm.ainvoke = AsyncMock(return_value=mock_response)
 
         with (
             patch("migratowl.core.impact.get_llm_semaphore", return_value=mock_sem),
-            patch("migratowl.core.impact.get_client", return_value=mock_instructor),
+            patch("migratowl.core.impact.get_structured_llm", return_value=mock_structured_llm),
         ):
             await assess_impact(
                 dep_name="requests",
@@ -217,3 +215,74 @@ class TestAssessImpactLLMSemaphore:
 
         mock_sem.__aenter__.assert_called_once()
         mock_sem.__aexit__.assert_called_once()
+
+
+class TestNullCoercionValidators:
+    """LLMs using function_calling often return null for collection fields.
+
+    These tests verify that None values are coerced to empty collections
+    instead of causing Pydantic validation errors.
+    """
+
+    def test_impact_item_null_affected_usages(self) -> None:
+        item = ImpactItem(
+            breaking_change="func removed",
+            affected_usages=None,  # type: ignore[arg-type]
+            severity=Severity.CRITICAL,
+            explanation="removed",
+            suggested_fix="use new_func",
+        )
+        assert item.affected_usages == []
+
+    def test_impact_assessment_null_collections(self) -> None:
+        assessment = ImpactAssessment(
+            dep_name="requests",
+            versions=None,  # type: ignore[arg-type]
+            impacts=None,  # type: ignore[arg-type]
+            summary="test",
+            overall_severity=Severity.INFO,
+            warnings=None,  # type: ignore[arg-type]
+            errors=None,  # type: ignore[arg-type]
+        )
+        assert assessment.versions == {}
+        assert assessment.impacts == []
+        assert assessment.warnings == []
+        assert assessment.errors == []
+
+    def test_changelog_analysis_null_collections(self) -> None:
+        analysis = ChangelogAnalysis(
+            breaking_changes=None,  # type: ignore[arg-type]
+            deprecations=None,  # type: ignore[arg-type]
+            new_features=None,  # type: ignore[arg-type]
+            confidence=0.8,
+        )
+        assert analysis.breaking_changes == []
+        assert analysis.deprecations == []
+        assert analysis.new_features == []
+
+    def test_rag_query_result_null_collections(self) -> None:
+        result = RAGQueryResult(
+            breaking_changes=None,  # type: ignore[arg-type]
+            confidence=0.5,
+            source_chunks=None,  # type: ignore[arg-type]
+        )
+        assert result.breaking_changes == []
+        assert result.source_chunks == []
+
+    def test_patch_set_null_patches(self) -> None:
+        ps = PatchSet(
+            dep_name="requests",
+            patches=None,  # type: ignore[arg-type]
+        )
+        assert ps.patches == []
+
+    def test_non_null_values_pass_through(self) -> None:
+        """Ensure validators don't interfere with valid non-null values."""
+        item = ImpactItem(
+            breaking_change="func removed",
+            affected_usages=["src/app.py:10"],
+            severity=Severity.CRITICAL,
+            explanation="removed",
+            suggested_fix="use new_func",
+        )
+        assert item.affected_usages == ["src/app.py:10"]

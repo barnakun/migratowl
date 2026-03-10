@@ -28,9 +28,7 @@ def _make_report_json(project_path: str = "/tmp/project") -> str:
 def _fake_settings(**overrides):
     """Create a fake settings object with sensible defaults for CLI tests."""
     defaults = {
-        "use_local_llm": False,
-        "openai_api_key": "sk-test",
-        "openai_model": "gpt-4o-mini",
+        "model": "openai:gpt-4o-mini",
         "log_level": "WARNING",
     }
     defaults.update(overrides)
@@ -330,49 +328,6 @@ class TestIgnoreFlag:
             mock_analyze.assert_called_once_with(str(project_dir), fix_mode=False, ignored_dependencies=None)
 
 
-class TestApiKeyValidation:
-    def test_missing_api_key_shows_error(self, tmp_path, monkeypatch) -> None:
-        project_dir = tmp_path / "myproject"
-        project_dir.mkdir()
-
-        monkeypatch.setattr(
-            "migratowl.interfaces.cli.settings",
-            type("S", (), {"use_local_llm": False, "openai_api_key": "", "log_level": "WARNING"})(),
-        )
-
-        result = runner.invoke(app, ["analyze", str(project_dir)])
-
-        assert result.exit_code == 1
-        assert "MIGRATOWL_OPENAI_API_KEY" in result.output
-
-    def test_local_llm_skips_api_key_check(self, tmp_path, monkeypatch) -> None:
-        project_dir = tmp_path / "myproject"
-        project_dir.mkdir()
-
-        monkeypatch.setattr(
-            "migratowl.interfaces.cli.settings",
-            type(
-                "S",
-                (),
-                {
-                    "use_local_llm": True,
-                    "openai_api_key": "",
-                    "openai_model": "llama3.2",
-                    "log_level": "WARNING",
-                },
-            )(),
-        )
-
-        with patch(
-            "migratowl.interfaces.cli.run_analysis",
-            new_callable=AsyncMock,
-            return_value=_make_report_json(str(project_dir)),
-        ):
-            result = runner.invoke(app, ["analyze", str(project_dir)])
-
-        assert result.exit_code == 0
-
-
 class TestModelFlag:
     def test_model_flag_overrides_settings(self, tmp_path, monkeypatch) -> None:
         project_dir = tmp_path / "myproject"
@@ -386,10 +341,10 @@ class TestModelFlag:
             new_callable=AsyncMock,
             return_value=_make_report_json(str(project_dir)),
         ):
-            result = runner.invoke(app, ["analyze", str(project_dir), "--model", "gpt-4o"])
+            result = runner.invoke(app, ["analyze", str(project_dir), "--model", "anthropic:claude-haiku-4-5-20251001"])
 
         assert result.exit_code == 0
-        assert fake.openai_model == "gpt-4o"
+        assert fake.model == "anthropic:claude-haiku-4-5-20251001"
 
 
 class TestInitCommand:
@@ -400,7 +355,7 @@ class TestInitCommand:
         env_file = tmp_path / ".env"
         assert env_file.exists()
         content = env_file.read_text()
-        assert "MIGRATOWL_OPENAI_API_KEY" in content
+        assert "OPENAI_API_KEY" in content
 
     def test_init_warns_if_env_exists(self, tmp_path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)

@@ -73,7 +73,7 @@ async def scan_project(project_path: str | Path) -> list[Dependency]:
                     deps = await parser(filepath)
                     all_deps.extend(deps)
 
-    # Deduplicate by (name, current_version) — multiple manifests (e.g. requirements.txt + Pipfile) often list the same packages.
+    # Deduplicate by (name, current_version) — multiple manifests often list the same packages.
     seen: set[tuple[str, str]] = set()
     unique: list[Dependency] = []
     for dep in all_deps:

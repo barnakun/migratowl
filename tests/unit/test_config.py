@@ -6,51 +6,21 @@ from migratowl.config import Settings
 
 
 class TestSettingsDefaults:
-    def test_default_openai_model(self) -> None:
-        s = Settings(openai_api_key="test-key")
-        assert s.openai_model == "gpt-4o-mini"
-
-    def test_default_use_local_llm(self) -> None:
-        s = Settings(openai_api_key="test-key")
-        assert s.use_local_llm is False
-
-    def test_default_ollama_base_url(self) -> None:
-        s = Settings(openai_api_key="test-key")
-        assert s.ollama_base_url == "http://localhost:11434/v1"
-
     def test_default_vectorstore_path(self) -> None:
-        s = Settings(openai_api_key="test-key")
+        s = Settings()
         assert s.vectorstore_path == ".migratowl/vectorstore"
 
-    def test_default_max_retries(self) -> None:
-        s = Settings(openai_api_key="test-key")
-        assert s.max_retries == 2
-
     def test_default_confidence_threshold(self) -> None:
-        s = Settings(openai_api_key="test-key")
+        s = Settings()
         assert s.confidence_threshold == 0.6
 
     def test_default_embedding_model(self) -> None:
-        s = Settings(openai_api_key="test-key")
-        assert s.embedding_model == "text-embedding-3-small"
-
-    def test_default_local_embedding_model(self) -> None:
-        s = Settings(openai_api_key="test-key")
-        assert s.local_embedding_model == "nomic-embed-text"
+        s = Settings()
+        assert s.embedding_model == "openai:text-embedding-3-small"
 
 
 class TestSettingsEnvOverride:
-    def test_env_prefix_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MIGRATOWL_OPENAI_API_KEY", "sk-test-123")
-        monkeypatch.setenv("MIGRATOWL_OPENAI_MODEL", "gpt-4o")
-        monkeypatch.setenv("MIGRATOWL_USE_LOCAL_LLM", "true")
-        s = Settings()
-        assert s.openai_api_key == "sk-test-123"
-        assert s.openai_model == "gpt-4o"
-        assert s.use_local_llm is True
-
     def test_confidence_threshold_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MIGRATOWL_OPENAI_API_KEY", "test")
         monkeypatch.setenv("MIGRATOWL_CONFIDENCE_THRESHOLD", "0.8")
         s = Settings()
         assert s.confidence_threshold == 0.8
@@ -73,15 +43,15 @@ class TestSettingsSingleton:
 
 class TestScalabilitySettings:
     def test_default_max_concurrent_deps(self) -> None:
-        s = Settings(openai_api_key="test")
+        s = Settings()
         assert s.max_concurrent_deps == 20
 
     def test_default_max_concurrent_registry_queries(self) -> None:
-        s = Settings(openai_api_key="test")
+        s = Settings()
         assert s.max_concurrent_registry_queries == 20
 
     def test_default_max_rag_results(self) -> None:
-        s = Settings(openai_api_key="test")
+        s = Settings()
         assert s.max_rag_results == 20
 
     def test_max_concurrent_deps_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,7 +65,7 @@ class TestScalabilitySettings:
         assert s.max_rag_results == 10
 
     def test_default_max_concurrent_llm_calls(self) -> None:
-        s = Settings(openai_api_key="test")
+        s = Settings()
         assert s.max_concurrent_llm_calls == 5
 
     def test_max_concurrent_llm_calls_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +74,7 @@ class TestScalabilitySettings:
         assert s.max_concurrent_llm_calls == 2
 
     def test_default_summarize_threshold(self) -> None:
-        s = Settings(openai_api_key="test")
+        s = Settings()
         assert s.summarize_threshold == 32_000
 
     def test_summarize_threshold_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,42 +83,39 @@ class TestScalabilitySettings:
         assert s.summarize_threshold == 16_000
 
 
-class TestActiveEmbeddingModel:
-    def test_active_embedding_model_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("migratowl.config.settings", Settings(openai_api_key="test", use_local_llm=False))
-        from migratowl.config import active_embedding_model
-
-        assert active_embedding_model() == "text-embedding-3-small"
-
-    def test_active_embedding_model_local(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("migratowl.config.settings", Settings(openai_api_key="test", use_local_llm=True))
-        from migratowl.config import active_embedding_model
-
-        assert active_embedding_model() == "nomic-embed-text"
-
-
 class TestIgnoredDependencies:
     def test_default_empty_string(self) -> None:
-        s = Settings(openai_api_key="test")
+        s = Settings()
         assert s.ignored_dependencies == ""
 
     def test_parsed_empty_string_returns_empty_list(self) -> None:
-        s = Settings(openai_api_key="test", ignored_dependencies="")
+        s = Settings(ignored_dependencies="")
         assert s.parsed_ignored_dependencies == []
 
     def test_parsed_comma_separated(self) -> None:
-        s = Settings(openai_api_key="test", ignored_dependencies="requests, flask, boto3")
+        s = Settings(ignored_dependencies="requests, flask, boto3")
         assert s.parsed_ignored_dependencies == ["requests", "flask", "boto3"]
 
     def test_parsed_strips_whitespace(self) -> None:
-        s = Settings(openai_api_key="test", ignored_dependencies="  requests , flask  ")
+        s = Settings(ignored_dependencies="  requests , flask  ")
         assert s.parsed_ignored_dependencies == ["requests", "flask"]
 
     def test_parsed_skips_empty_entries(self) -> None:
-        s = Settings(openai_api_key="test", ignored_dependencies="requests,,flask,")
+        s = Settings(ignored_dependencies="requests,,flask,")
         assert s.parsed_ignored_dependencies == ["requests", "flask"]
 
     def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MIGRATOWL_IGNORED_DEPENDENCIES", "numpy,pandas")
         s = Settings()
         assert s.parsed_ignored_dependencies == ["numpy", "pandas"]
+
+
+class TestModelField:
+    def test_default_model_is_openai_gpt4o_mini(self) -> None:
+        s = Settings()
+        assert s.model == "openai:gpt-4o-mini"
+
+    def test_model_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MIGRATOWL_MODEL", "anthropic:claude-sonnet-4-5-20250929")
+        s = Settings()
+        assert s.model == "anthropic:claude-sonnet-4-5-20250929"

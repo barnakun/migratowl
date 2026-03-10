@@ -8,6 +8,20 @@ from typing import Annotated, TypedDict
 
 from pydantic import BaseModel, Field, field_validator
 
+# --- Null-coercion helpers for LLM structured output ---
+# OpenAI function_calling mode often returns `null` for collection fields.
+# `default_factory` only applies when the key is *missing*; an explicit `null`
+# bypasses it and hits Pydantic validation.  These helpers fix that.
+
+
+def _none_to_list(v: object) -> object:
+    return [] if v is None else v
+
+
+def _none_to_dict(v: object) -> object:
+    return {} if v is None else v
+
+
 # --- Enums ---
 
 
@@ -85,6 +99,11 @@ class ChangelogAnalysis(BaseModel):
     new_features: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence score 0-1")
 
+    @field_validator("breaking_changes", "deprecations", "new_features", mode="before")
+    @classmethod
+    def coerce_none_to_list(cls, v: object) -> object:
+        return _none_to_list(v)
+
     @field_validator("deprecations", "new_features", mode="before")
     @classmethod
     def coerce_string_list(cls, v: object) -> object:
@@ -115,6 +134,11 @@ class RAGQueryResult(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     source_chunks: list[str] = Field(default_factory=list)
 
+    @field_validator("breaking_changes", "source_chunks", mode="before")
+    @classmethod
+    def coerce_none_to_list(cls, v: object) -> object:
+        return _none_to_list(v)
+
 
 class ImpactItem(BaseModel):
     breaking_change: str
@@ -126,6 +150,30 @@ class ImpactItem(BaseModel):
     explanation: str
     suggested_fix: str
 
+    @field_validator("affected_usages", mode="before")
+    @classmethod
+    def coerce_none_to_list(cls, v: object) -> object:
+        return _none_to_list(v)
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def coerce_severity(cls, v: object) -> object:
+        """Coerce unknown severity values from LLMs (e.g. 'high', 'CRITICAL') to valid enum."""
+        if isinstance(v, str):
+            lower = v.lower()
+            valid = {s.value for s in Severity}
+            if lower in valid:
+                return lower
+            # Map common LLM synonyms
+            if lower in ("high", "major", "error"):
+                return Severity.CRITICAL
+            if lower in ("medium", "moderate", "warn"):
+                return Severity.WARNING
+            if lower in ("low", "minor", "none"):
+                return Severity.INFO
+            return Severity.UNKNOWN
+        return v
+
 
 class ImpactAssessment(BaseModel):
     dep_name: str
@@ -135,6 +183,34 @@ class ImpactAssessment(BaseModel):
     overall_severity: Severity
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+    @field_validator("impacts", "warnings", "errors", mode="before")
+    @classmethod
+    def coerce_none_to_list(cls, v: object) -> object:
+        return _none_to_list(v)
+
+    @field_validator("versions", mode="before")
+    @classmethod
+    def coerce_none_to_dict(cls, v: object) -> object:
+        return _none_to_dict(v)
+
+    @field_validator("overall_severity", mode="before")
+    @classmethod
+    def coerce_severity(cls, v: object) -> object:
+        """Coerce unknown severity values from LLMs (e.g. 'high', 'CRITICAL') to valid enum."""
+        if isinstance(v, str):
+            lower = v.lower()
+            valid = {s.value for s in Severity}
+            if lower in valid:
+                return lower
+            if lower in ("high", "major", "error"):
+                return Severity.CRITICAL
+            if lower in ("medium", "moderate", "warn"):
+                return Severity.WARNING
+            if lower in ("low", "minor", "none"):
+                return Severity.INFO
+            return Severity.UNKNOWN
+        return v
 
 
 class PatchSuggestion(BaseModel):
@@ -148,6 +224,11 @@ class PatchSet(BaseModel):
     dep_name: str
     patches: list[PatchSuggestion] = Field(default_factory=list)
     unified_diff: str = ""
+
+    @field_validator("patches", mode="before")
+    @classmethod
+    def coerce_none_to_list(cls, v: object) -> object:
+        return _none_to_list(v)
 
 
 # --- Other Models ---

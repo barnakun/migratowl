@@ -1,7 +1,7 @@
 """Impact assessment — cross-references breaking changes with code usages."""
 
-from migratowl.config import active_model, settings
-from migratowl.core.llm import get_client, get_llm_semaphore
+from migratowl.core.llm import get_llm_semaphore, get_structured_llm
+from migratowl.core.prompts import IMPACT_ASSESSMENT_PROMPT
 from migratowl.models.schemas import (
     BreakingChange,
     CodeUsage,
@@ -33,29 +33,16 @@ async def assess_impact(
 
     context = _build_impact_context(breaking_changes, code_usages)
 
-    instructor_client = get_client()
+    structured_llm = get_structured_llm(ImpactAssessment)
+    chain = IMPACT_ASSESSMENT_PROMPT | structured_llm
     async with get_llm_semaphore():
-        result: ImpactAssessment = await instructor_client.chat.completions.create(
-            model=active_model(),
-            response_model=ImpactAssessment,
-            max_retries=settings.max_retries,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a dependency migration expert. Analyze the breaking changes and code usages below to assess the impact on the project. Return a structured impact assessment."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Dependency: {dep_name}\n"
-                        f"Current version: {current_version}\n"
-                        f"Latest version: {latest_version}\n\n"
-                        f"{context}"
-                    ),
-                },
-            ],
+        result: ImpactAssessment = await chain.ainvoke(
+            {
+                "dep_name": dep_name,
+                "current_version": current_version,
+                "latest_version": latest_version,
+                "context": context,
+            }
         )
     # Always populate versions from our own args — LLMs routinely omit this field.
     result.versions = {"current": current_version, "latest": latest_version}

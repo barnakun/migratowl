@@ -4,12 +4,8 @@ import difflib
 import logging
 from pathlib import Path
 
-import httpx
-import openai
-from instructor.core import InstructorRetryException
-
-from migratowl.config import active_model, settings
-from migratowl.core.llm import get_client, get_llm_semaphore
+from migratowl.core.llm import get_llm_semaphore, get_structured_llm
+from migratowl.core.prompts import PATCH_GENERATION_PROMPT
 from migratowl.models.schemas import ImpactAssessment, PatchSet, PatchSuggestion
 
 logger = logging.getLogger(__name__)
@@ -29,12 +25,7 @@ async def generate_patches(assessments: list[ImpactAssessment], project_path: st
         if assessment.impacts:
             try:
                 patch_set = await _generate_patch_for_dep(assessment, project_path)
-            except (
-                openai.APIError,
-                openai.APIConnectionError,
-                httpx.RequestError,
-                InstructorRetryException,
-            ):
+            except Exception:
                 logger.warning(
                     "Patch generation failed for %s, returning empty patch set",
                     assessment.dep_name,
@@ -49,38 +40,17 @@ async def _generate_patch_for_dep(assessment: ImpactAssessment, project_path: st
     """Generate a PatchSet for a single dependency using the LLM."""
     impacts_text = _build_impacts_context(assessment, project_path)
 
-    instructor_client = get_client()
+    structured_llm = get_structured_llm(PatchSet)
+    chain = PATCH_GENERATION_PROMPT | structured_llm
     async with get_llm_semaphore():
-        result: PatchSet = await instructor_client.chat.completions.create(
-            model=active_model(),
-            response_model=PatchSet,
-            max_retries=settings.max_retries,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a code migration expert. Given the impact assessment below, "
-                        "generate concrete code patches that fix the breaking changes. "
-                        "Return a PatchSet with file-level patches showing original and patched code.\n\n"
-                        "IMPORTANT CONSTRAINTS:\n"
-                        "- Only patch executable code (imports, function calls, class definitions, configuration). "
-                        "Do NOT patch comments, docstrings, or version strings.\n"
-                        "- The original_code field MUST contain code that actually exists in the file. "
-                        "Do NOT invent or guess what the file contains.\n"
-                        "- If you are unsure what code exists in a file, omit that patch entirely."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Project path: {project_path}\n"
-                        f"Dependency: {assessment.dep_name}\n"
-                        f"Current version: {assessment.versions.get('current', '?')}\n"
-                        f"Latest version: {assessment.versions.get('latest', '?')}\n\n"
-                        f"{impacts_text}"
-                    ),
-                },
-            ],
+        result: PatchSet = await chain.ainvoke(
+            {
+                "project_path": project_path,
+                "dep_name": assessment.dep_name,
+                "current_version": assessment.versions.get("current", "?"),
+                "latest_version": assessment.versions.get("latest", "?"),
+                "impacts_text": impacts_text,
+            }
         )
     result.patches = [
         p

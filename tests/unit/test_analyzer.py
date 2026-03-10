@@ -121,12 +121,18 @@ class TestScanDependenciesNodeIgnore:
         ]
         mock_outdated = [
             OutdatedDependency(
-                name="requests", current_version="2.28.0", latest_version="2.31.0",
-                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+                name="requests",
+                current_version="2.28.0",
+                latest_version="2.31.0",
+                ecosystem=Ecosystem.PYTHON,
+                manifest_path="req.txt",
             ),
             OutdatedDependency(
-                name="flask", current_version="2.0.0", latest_version="3.0.0",
-                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+                name="flask",
+                current_version="2.0.0",
+                latest_version="3.0.0",
+                ecosystem=Ecosystem.PYTHON,
+                manifest_path="req.txt",
             ),
         ]
 
@@ -151,14 +157,19 @@ class TestScanDependenciesNodeIgnore:
 
         mock_deps = [
             Dependency(
-                name="Flask-Login", current_version="0.5.0",
-                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+                name="Flask-Login",
+                current_version="0.5.0",
+                ecosystem=Ecosystem.PYTHON,
+                manifest_path="req.txt",
             ),
         ]
         mock_outdated = [
             OutdatedDependency(
-                name="Flask-Login", current_version="0.5.0", latest_version="0.6.0",
-                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+                name="Flask-Login",
+                current_version="0.5.0",
+                latest_version="0.6.0",
+                ecosystem=Ecosystem.PYTHON,
+                manifest_path="req.txt",
             ),
         ]
 
@@ -185,8 +196,11 @@ class TestScanDependenciesNodeIgnore:
         ]
         mock_outdated = [
             OutdatedDependency(
-                name="requests", current_version="2.28.0", latest_version="2.31.0",
-                ecosystem=Ecosystem.PYTHON, manifest_path="req.txt",
+                name="requests",
+                current_version="2.28.0",
+                latest_version="2.31.0",
+                ecosystem=Ecosystem.PYTHON,
+                manifest_path="req.txt",
             ),
         ]
 
@@ -234,12 +248,18 @@ class TestParseAllCodeNode:
 
         mock_usages = [
             CodeUsage(
-                file_path="a.py", line_number=1, usage_type="import",
-                symbol="requests", code_snippet="import requests",
+                file_path="a.py",
+                line_number=1,
+                usage_type="import",
+                symbol="requests",
+                code_snippet="import requests",
             ),
             CodeUsage(
-                file_path="a.py", line_number=2, usage_type="import",
-                symbol="flask", code_snippet="from flask import Flask",
+                file_path="a.py",
+                line_number=2,
+                usage_type="import",
+                symbol="flask",
+                code_snippet="from flask import Flask",
             ),
         ]
 
@@ -322,8 +342,10 @@ class TestFanOutDeps:
 
         usages = [
             {
-                "file_path": "a.py", "line_number": 1,
-                "usage_type": "import", "symbol": "requests",
+                "file_path": "a.py",
+                "line_number": 1,
+                "usage_type": "import",
+                "symbol": "requests",
                 "code_snippet": "import requests",
             },
         ]
@@ -916,12 +938,18 @@ class TestParseCodeNode:
 
         usages = [
             CodeUsage(
-                file_path="a.py", line_number=1, usage_type="import",
-                symbol="requests", code_snippet="import requests",
+                file_path="a.py",
+                line_number=1,
+                usage_type="import",
+                symbol="requests",
+                code_snippet="import requests",
             ).model_dump(),
             CodeUsage(
-                file_path="a.py", line_number=2, usage_type="import",
-                symbol="flask", code_snippet="from flask import Flask",
+                file_path="a.py",
+                line_number=2,
+                usage_type="import",
+                symbol="flask",
+                code_snippet="from flask import Flask",
             ).model_dump(),
         ]
         state = _make_dep_state(all_code_usages=usages)
@@ -1398,7 +1426,8 @@ class TestAnalyze:
             patch("migratowl.core.analyzer.rag.query", new_callable=AsyncMock, return_value=mock_rag_result),
             patch(
                 "migratowl.core.analyzer.code_parser.find_all_usages",
-                new_callable=AsyncMock, return_value=mock_usages,
+                new_callable=AsyncMock,
+                return_value=mock_usages,
             ),
             patch("migratowl.core.analyzer.impact.assess_impact", new_callable=AsyncMock, return_value=mock_impact),
             patch("migratowl.core.analyzer.cache.get_cached_assessment", return_value=None),
@@ -1474,7 +1503,7 @@ class TestAnalyze:
         assert parsed["assessments"][0]["dep_name"] == "requests"
 
     @pytest.mark.asyncio
-    async def test_analyze_with_multiple_deps_does_not_raise_concurrent_update_error(self, _mock_preflight: AsyncMock) -> None:
+    async def test_analyze_with_multiple_deps_no_concurrent_update_error(self, _mock_preflight: AsyncMock) -> None:
         """Parallel fan-out with 2+ deps must not raise InvalidUpdateError on project_path."""
         from migratowl.core.analyzer import analyze
 
@@ -1930,8 +1959,7 @@ class TestCleanErrorMessage:
         # httpx.HTTPStatusError str() looks like:
         # "Client error '404 Not Found' for url 'https://raw.githubusercontent.com/...long...'"
         exc = Exception(
-            "Client error '404 Not Found' for url "
-            "'https://raw.githubusercontent.com/user/repo/main/CHANGELOG.md'"
+            "Client error '404 Not Found' for url 'https://raw.githubusercontent.com/user/repo/main/CHANGELOG.md'"
         )
         result = _clean_error_message(exc)
         assert "404 Not Found" in result
@@ -2078,23 +2106,15 @@ class TestPreflightCheck:
             await _preflight_api_check()
 
     @pytest.mark.asyncio
-    async def test_preflight_auth_error_raises_with_clear_message(self) -> None:
-        """When the API key is invalid, pre-flight raises with a user-friendly message."""
-        from openai import AuthenticationError
-
+    async def test_preflight_api_key_error_exits(self) -> None:
+        """When the API key is missing, pre-flight exits."""
         from migratowl.core.analyzer import _preflight_api_check
-
-        auth_error = AuthenticationError(
-            message="Incorrect API key",
-            response=AsyncMock(status_code=401),
-            body={"error": {"message": "Incorrect API key", "code": "invalid_api_key"}},
-        )
 
         with (
             patch(
                 "migratowl.core.analyzer.llm.get_embedding",
                 new_callable=AsyncMock,
-                side_effect=auth_error,
+                side_effect=ValueError("API key required"),
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -2103,17 +2123,15 @@ class TestPreflightCheck:
         assert exc_info.value.code == 1
 
     @pytest.mark.asyncio
-    async def test_preflight_connection_error_raises_with_clear_message(self) -> None:
-        """When the API is unreachable, pre-flight raises with a user-friendly message."""
-        from openai import APIConnectionError
-
+    async def test_preflight_connection_error_exits(self) -> None:
+        """When the API is unreachable, pre-flight exits."""
         from migratowl.core.analyzer import _preflight_api_check
 
         with (
             patch(
                 "migratowl.core.analyzer.llm.get_embedding",
                 new_callable=AsyncMock,
-                side_effect=APIConnectionError(request=AsyncMock()),
+                side_effect=httpx.ConnectError("Connection refused"),
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -2129,10 +2147,10 @@ class TestPreflightCheck:
         with patch(
             "migratowl.core.analyzer.llm.get_embedding",
             new_callable=AsyncMock,
-            side_effect=openai.APIError(
-                message="temporary glitch",
-                request=httpx.Request("POST", "https://api.openai.com"),
-                body=None,
+            side_effect=httpx.HTTPStatusError(
+                message="rate limited",
+                request=httpx.Request("POST", "https://api.example.com"),
+                response=httpx.Response(429),
             ),
         ):
             # Should not raise — transient errors are not fatal

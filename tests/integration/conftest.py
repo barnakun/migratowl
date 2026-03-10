@@ -1,14 +1,11 @@
-"""Integration test fixtures — requires Ollama running with llama3.2 + nomic-embed-text."""
+"""Integration test fixtures — requires OPENAI_API_KEY."""
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _integration_env(monkeypatch, tmp_path):
-    """Set environment for local LLM integration tests."""
-    monkeypatch.setenv("MIGRATOWL_USE_LOCAL_LLM", "true")
-    monkeypatch.setenv("MIGRATOWL_OPENAI_API_KEY", "")
-    monkeypatch.setenv("MIGRATOWL_OPENAI_MODEL", "llama3.2")
+    """Set environment for integration tests."""
     monkeypatch.setenv("MIGRATOWL_VECTORSTORE_PATH", str(tmp_path / "vectorstore"))
 
 
